@@ -1,0 +1,54 @@
+#!/bin/bash
+# Called by the agent on every action: entrypoint --service-path=<scope dir> [--overrides-path=<dir>]...
+set -euo pipefail
+
+if [ -z "${NP_ACTION_CONTEXT:-}" ]; then
+  echo "NP_ACTION_CONTEXT is not set. Exiting." >&2
+  exit 1
+fi
+
+# The agent passes NP_API_KEY; the np CLI reads NULLPLATFORM_API_KEY.
+if [ -n "${NP_API_KEY:-}" ] && [ -z "${NULLPLATFORM_API_KEY:-}" ]; then
+  export NULLPLATFORM_API_KEY="$NP_API_KEY"
+fi
+
+WORKING_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_PATH=""
+OVERRIDES_PATH=""
+for arg in "$@"; do
+  case "$arg" in
+    --service-path=*) SERVICE_PATH="${arg#*=}" ;;
+    --overrides-path=*) OVERRIDES_PATH="${OVERRIDES_PATH:+$OVERRIDES_PATH,}${arg#*=}" ;;
+    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+  esac
+done
+if [ -z "$SERVICE_PATH" ]; then
+  echo "--service-path is required (the scope directory, e.g. /app/pkg/my-scope)" >&2
+  exit 1
+fi
+
+NP_ACTION_CONTEXT=$(echo "$NP_ACTION_CONTEXT" | sed "s/^'//;s/'$//")
+CONTEXT=$(echo "$NP_ACTION_CONTEXT" | jq '.notification')
+SCOPE_ID=$(echo "$CONTEXT" | jq -r '.parameters.scope_id // .tags.scope_id // .arguments.scope_id // empty')
+DEPLOYMENT_ID=$(echo "$CONTEXT" | jq -r '.parameters.deployment_id // empty')
+SERVICE_ACTION=$(echo "$CONTEXT" | jq -r '.slug // empty')
+SERVICE_ACTION_TYPE=$(echo "$CONTEXT" | jq -r '.type // empty')
+NOTIFICATION_ACTION=$(echo "$CONTEXT" | jq -r '.action // empty')
+export NP_ACTION_CONTEXT CONTEXT SCOPE_ID DEPLOYMENT_ID SERVICE_ACTION SERVICE_ACTION_TYPE \
+  NOTIFICATION_ACTION WORKING_DIRECTORY SERVICE_PATH OVERRIDES_PATH
+
+# Telemetry and parameters are not implemented: answer empty JSON (stdout must be JSON only).
+# To serve them, add <entity>/workflows and route here, as nullplatform/scopes k8s does.
+case "$NOTIFICATION_ACTION" in
+  log:read) echo '{"results":[],"next_page_token":""}'; exit 0 ;;
+  metric:list | instance:data) echo '{"results":[]}'; exit 0 ;;
+  metric:*) echo '{"metric":"","type":"","period_in_seconds":0,"unit":"","results":[]}'; exit 0 ;;
+  # Failing beats acknowledging a secret this scope never stored.
+  parameter:*) echo "This scope does not store parameters ($NOTIFICATION_ACTION)" >&2; exit 1 ;;
+esac
+
+handler="scope"
+[ -n "$DEPLOYMENT_ID" ] && handler="deployment"
+
+echo "Notification action=$NOTIFICATION_ACTION slug=$SERVICE_ACTION scope=$SCOPE_ID deployment=${DEPLOYMENT_ID:-none}"
+np service-action exec --live-output --live-report --script="$WORKING_DIRECTORY/service/$handler/entrypoint"

@@ -1,0 +1,14 @@
+#!/bin/bash
+# Runs scope/workflows/<action>.yaml: create, update, delete, or a custom action slug.
+set -euo pipefail
+
+case "$SERVICE_ACTION_TYPE:$SERVICE_ACTION" in
+  custom:update-scope) action="update" ;;
+  custom:delete-scope) action="delete" ;;
+  custom:*) action="$SERVICE_ACTION" ;;
+  *) action="$SERVICE_ACTION_TYPE" ;;
+esac
+
+# shellcheck source=service/workflow
+source "$WORKING_DIRECTORY/service/workflow"
+run_workflow scope "$action"

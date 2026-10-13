@@ -1,0 +1,17 @@
+#!/bin/bash
+# Runs deployment/workflows/<action>.yaml for a deployment action slug.
+set -euo pipefail
+
+case "$SERVICE_ACTION" in
+  start-initial) action="initial" ;;
+  start-blue-green) action="blue_green" ;;
+  switch-traffic) action="switch_traffic" ;;
+  finalize-blue-green) action="finalize" ;;
+  rollback-deployment) action="rollback" ;;
+  delete-deployment) action="delete" ;;
+  *) action="$SERVICE_ACTION" ;;
+esac
+
+# shellcheck source=service/workflow
+source "$WORKING_DIRECTORY/service/workflow"
+run_workflow deployment "$action"

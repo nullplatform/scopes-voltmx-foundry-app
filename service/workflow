@@ -1,0 +1,23 @@
+#!/bin/bash
+# Sourced by the handlers: runs <entity>/workflows/<action>.yaml with each override directory's copy layered on top.
+
+run_workflow() {
+  local entity="$1" action="$2"
+  local workflow="$SERVICE_PATH/$entity/workflows/$action.yaml"
+  local overrides=() dirs=() dir
+
+  if [ ! -f "$workflow" ]; then
+    echo "No workflow for $entity action '$action' (slug=$SERVICE_ACTION type=$SERVICE_ACTION_TYPE): expected $workflow" >&2
+    exit 1
+  fi
+
+  IFS=',' read -ra dirs <<< "$OVERRIDES_PATH"
+  for dir in ${dirs[@]+"${dirs[@]}"}; do
+    if [ -f "$dir/$entity/workflows/$action.yaml" ]; then
+      overrides+=(--overrides "$dir/$entity/workflows/$action.yaml")
+    fi
+  done
+
+  echo "Executing $entity workflow $action.yaml for scope=$SCOPE_ID deployment=${DEPLOYMENT_ID:-none}"
+  np service workflow exec --workflow "$workflow" --build-context --include-secrets ${overrides[@]+"${overrides[@]}"}
+}

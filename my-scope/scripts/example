@@ -1,0 +1,5 @@
+#!/bin/bash
+# Placeholder step: replace with the steps your scope needs (build context, apply, report status).
+set -euo pipefail
+
+echo "Running $SERVICE_ACTION for scope $SCOPE_ID${DEPLOYMENT_ID:+ deployment $DEPLOYMENT_ID}"
