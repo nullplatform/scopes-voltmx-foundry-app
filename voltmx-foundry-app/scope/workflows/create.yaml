@@ -34,6 +34,8 @@ steps:
         type: environment
       - name: MFCLI_AUTH_ARGS
         type: environment
+      - name: MFCLI_CMD
+        type: environment
       - name: CREDENTIALS_SECRET
         type: environment
       - name: SECRETS_PREFIX

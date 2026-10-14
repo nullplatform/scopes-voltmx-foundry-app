@@ -35,6 +35,7 @@
 #   SECRETS_PREFIX          secrets_prefix of the scope configuration, else voltmx/<namespace slug>/
 #   ASSETS_BUCKET, ASSETS_REGION
 #   SCOPE_CONFIGURATION     the whole 'Volt MX Foundry app' scope configuration (JSON)
+#   MFCLI_CMD               only when the scope configuration sets mfcli.command (testing with a mock)
 #   PROFILE_VARS            {"<variable>": "<value>"} from .parameters.results (never printed)
 #   PREVIOUS_DEPLOYMENT_ID, PREVIOUS_RELEASE_SEMVER  finalized deployment still
 #                           active in the scope, else the most recent finalized one
@@ -253,6 +254,11 @@ ASSETS_BUCKET=$(get_config_value --provider "$config_path.assets.bucket" --env A
 ASSETS_REGION=$(get_config_value --provider "$config_path.assets.region" --env ASSETS_REGION --default "us-east-1")
 app_name_prefix=$(get_config_value --provider "$config_path.app_name_prefix" --env FOUNDRY_APP_NAME_PREFIX)
 configured_secrets_prefix=$(get_config_value --provider "$config_path.secrets_prefix" --env SECRETS_PREFIX)
+# mfcli.command replaces MFCLI_CMD (values.yaml) for the scopes of this
+# configuration: meant for testing with a mock of the Foundry CLI, such as
+# tools/mfcli-mock/mfcli shipped with the worker image. mfcli_run splits it on
+# spaces, so it is a command line of plain words: no shell syntax.
+configured_mfcli_command=$(get_config_value --provider "$config_path.mfcli.command")
 # allowed_apps is a JSON array in the scope configuration, a comma separated
 # list in FOUNDRY_ALLOWED_APPS.
 allowed_apps=$(ctx -c "$config_path.allowed_apps // empty")
@@ -430,6 +436,22 @@ if [ -n "$app_name_prefix" ]; then
 	is_foundry_name "$app_name_prefix" || fail_app_not_allowed "app_name_prefix '$app_name_prefix' is not a valid app name prefix"
 	[[ "$FOUNDRY_APP" == "$app_name_prefix"* ]] || fail_app_not_allowed "it does not start with app_name_prefix '$app_name_prefix'"
 	binding_summary="${binding_summary:+$binding_summary | }app_name_prefix: $app_name_prefix"
+fi
+
+if [ -n "$configured_mfcli_command" ]; then
+	if ! [[ "$configured_mfcli_command" =~ ^[A-Za-z0-9_./=:-]+([[:space:]]+[A-Za-z0-9_./=:-]+)*$ ]]; then
+		{
+			echo "   ❌ Invalid mfcli.command '$configured_mfcli_command': a command line of plain words (letters, digits and / . _ - = :), no shell syntax"
+			echo "  💡 Possible causes:"
+			echo "    • mfcli.command of the 'Volt MX Foundry app' scope configuration carries quotes, variables or shell operators"
+			echo "  🔧 How to fix:"
+			echo "    • Set mfcli.command to the command alone (e.g. /app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli), or remove it to run the Foundry CLI of values.yaml"
+		} >&2
+		exit 1
+	fi
+	MFCLI_CMD="$configured_mfcli_command"
+	export MFCLI_CMD
+	echo "   ⚠️ mfcli.command of the scope configuration replaces the Foundry CLI: $MFCLI_CMD (meant for testing with a mock)"
 fi
 
 if [ -z "$SCOPE_CONFIGURATION" ]; then

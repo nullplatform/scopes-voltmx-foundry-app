@@ -805,3 +805,45 @@ scope_context() {
 	assert_equal "$status" "1"
 	refute_line "✨ Build context ready"
 }
+
+# =============================================================================
+# mfcli.command: the scope configuration points MFCLI_CMD at a mock (testing)
+# =============================================================================
+@test "Should let the scope configuration replace the Foundry CLI with a mock (mfcli.command)" {
+	use_context_configuration
+	with_context '.providers["scope-configurations"].mfcli = {command: "/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli"}'
+	export MFCLI_CMD="java -jar /opt/mfcli/mfcli.jar"
+
+	run source "$SCRIPT"
+	assert_equal "$status" "0"
+	assert_line "   ⚠️ mfcli.command of the scope configuration replaces the Foundry CLI: /app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli (meant for testing with a mock)"
+
+	run_build_context
+	assert_equal "$MFCLI_CMD" "/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli"
+	assert_equal "$(bash -c 'echo "$MFCLI_CMD"')" "/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli"
+}
+
+@test "Should keep MFCLI_CMD from values.yaml when the scope configuration sets no mfcli.command" {
+	export MFCLI_CMD="java -jar /opt/mfcli/mfcli.jar"
+
+	run source "$SCRIPT"
+	assert_equal "$status" "0"
+	[[ "$output" != *"mfcli.command"* ]]
+
+	run_build_context
+	assert_equal "$MFCLI_CMD" "java -jar /opt/mfcli/mfcli.jar"
+}
+
+@test "Should reject an mfcli.command with shell syntax" {
+	use_context_configuration
+	local command
+	for command in 'mfcli; rm -rf /' '$(curl x)' 'java -jar a.jar | tee' 'java -jar "a b.jar"'; do
+		CONTEXT=$(echo "$CONTEXT" | jq --arg c "$command" '.providers["scope-configurations"].mfcli.command = $c')
+		export CONTEXT
+
+		run source "$SCRIPT"
+
+		assert_equal "$status" "1"
+		assert_line "   ❌ Invalid mfcli.command '$command': a command line of plain words (letters, digits and / . _ - = :), no shell syntax"
+	done
+}

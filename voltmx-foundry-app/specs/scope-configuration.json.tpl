@@ -101,6 +101,19 @@
         "description": "Folder that credentials_secret must live in. Defaults to voltmx/<namespace slug>/, so a scope cannot use the Foundry technical user of another team.",
         "pattern": "^voltmx/[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*/$"
       },
+      "mfcli": {
+        "type": "object",
+        "title": "Foundry CLI (testing)",
+        "description": "For testing with a mock of the Foundry CLI. Leave it empty in production: the worker runs the real mfcli.jar (MFCLI_CMD in values.yaml).",
+        "properties": {
+          "command": {
+            "type": "string",
+            "title": "mfcli command",
+            "description": "Command line that replaces MFCLI_CMD for the scopes of this configuration, e.g. /app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli. Plain words only, no shell syntax.",
+            "pattern": "^[A-Za-z0-9_./=:-]+( +[A-Za-z0-9_./=:-]+)*$"
+          }
+        }
+      },
       "assets": {
         "type": "object",
         "title": "Assets",
@@ -152,6 +165,13 @@
               "elements": [
                 { "type": "Control", "scope": "#/properties/assets/properties/bucket" },
                 { "type": "Control", "scope": "#/properties/assets/properties/region" }
+              ]
+            },
+            {
+              "type": "Category",
+              "label": "Testing",
+              "elements": [
+                { "type": "Control", "scope": "#/properties/mfcli/properties/command" }
               ]
             }
           ]

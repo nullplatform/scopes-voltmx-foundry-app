@@ -138,7 +138,17 @@ assert_ui_scopes_resolve() {
 	assert_equal "$(echo "$cfg" | jq -r .schema.properties.credentials_secret.pattern)" '^voltmx/[A-Za-z0-9/_-]+$'
 	assert_equal "$(echo "$cfg" | jq -c .schema.properties.assets.required)" '["bucket"]'
 	assert_equal "$(echo "$cfg" | jq -r .schema.properties.assets.properties.region.default)" "us-east-1"
-	assert_equal "$(echo "$cfg" | jq -c '.schema.properties | keys')" '["allowed_apps","app_name_prefix","assets","auth","credentials_secret","environment_name","secrets_prefix"]'
+	assert_equal "$(echo "$cfg" | jq -c '.schema.properties | keys')" '["allowed_apps","app_name_prefix","assets","auth","credentials_secret","environment_name","mfcli","secrets_prefix"]'
+}
+
+@test "Scope configuration offers an optional mfcli.command for testing with a mock, with no shell syntax" {
+	local mfcli
+	mfcli=$(render "$SPECS_DIR/scope-configuration.json.tpl" | jq .schema.properties.mfcli)
+	assert_equal "$(echo "$mfcli" | jq -r .type)" "object"
+	assert_equal "$(echo "$mfcli" | jq -c '.required // []')" "[]"
+	assert_equal "$(echo "$mfcli" | jq -r .properties.command.type)" "string"
+	assert_equal "$(echo "$mfcli" | jq -r .properties.command.pattern)" '^[A-Za-z0-9_./=:-]+( +[A-Za-z0-9_./=:-]+)*$'
+	assert_contains "$(echo "$mfcli" | jq -r .description)" "testing with a mock"
 }
 
 @test "Scope configuration binds apps and secrets to the namespace (multi-tenant Foundry environments)" {
