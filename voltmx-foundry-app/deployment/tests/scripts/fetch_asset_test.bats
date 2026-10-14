@@ -32,6 +32,17 @@ setup() {
 	assert_file_exists "$FOUNDRY_ZIP"
 }
 
+@test "Should refuse an asset outside the assets prefix without downloading it, naming the prefix" {
+	export ASSET_URL="https://assets-aws-mobile.s3.us-east-1.amazonaws.com/web/442353700/30/PetStore.zip"
+
+	run bash -c 'source "$0"' "$SCRIPT"
+
+	assert_equal "$status" "1"
+	assert_line "   ❌ Asset URL is outside the 'foundry/' prefix of the assets bucket 'assets-aws-mobile': $ASSET_URL"
+	assert_line "    • Or set ASSETS_PREFIX in values.yaml to the prefix the CI uses, and the same assets_prefix in the IAM module of the scope"
+	[ ! -f "$AWS_MOCK_CALLS_LOG" ]
+}
+
 @test "Should refuse an asset outside the configured bucket without downloading it" {
 	export ASSET_URL="s3://someone-else/PetStore.zip"
 

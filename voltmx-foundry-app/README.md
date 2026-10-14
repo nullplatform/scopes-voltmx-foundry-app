@@ -85,7 +85,7 @@ Every workflow starts with `utils/assume_role_step` (the IAM role of `specs/requ
 
 | Workflow | Steps | Step configuration |
 |---|---|---|
-| start-initial | `build_context`, `fetch_asset`, `read_credentials`, `render_profile`, `do_import`, `do_reconfig`, `do_publish`, `wait_publish`, `export_outputs` | |
+| start-initial | `build_context`, `fetch_asset`, `read_credentials`, `do_import`, `render_profile`, `do_reconfig`, `do_publish`, `wait_publish`, `export_outputs` | |
 | rollback-deployment | `build_context`, `read_credentials`, `do_rollback` | `BUILD_CONTEXT_MODE: rollback` |
 | delete-deployment | `build_context`, `read_credentials`, `do_unpublish` | `BUILD_CONTEXT_MODE: rollback`, `UNPUBLISH_MODE: deployment` |
 | create-scope, update-scope | `build_context`, `read_credentials` (the configuration resolves, the app is allowed, the secret exists and has the right shape; nothing is called in Foundry) | `BUILD_CONTEXT_MODE: scope` |
@@ -101,6 +101,10 @@ asset or profile variables) or `scope` (no deployment, release or asset; the app
 secrets are still validated). `UNPUBLISH_MODE` is required and never inferred.
 
 Every step is idempotent: a deployment that timed out waiting for the publish can be re-run.
+
+The service profile carries parameter values, so it lives on disk as little as possible: it is rendered right before
+`import-config` applies it (after `Import`, which can take long), `do_reconfig` deletes it whatever the outcome, and
+`build_context` removes one left by a run that died in between.
 
 Order matters: `do_reconfig` (`import-config`) applies the service profile to the app in the environment *before*
 `Publish`. The profile belongs to the app and environment, not to a version, so the version that is still active

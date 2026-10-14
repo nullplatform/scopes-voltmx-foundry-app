@@ -45,7 +45,7 @@ seed_as() {
 	MFCLI_USER=np-foundry MFCLI_PASSWORD="$SECRET_PASSWORD" FOUNDRY_APP=PetStore ENVIRONMENT_NAME=uat seed_active_version "$1"
 }
 
-INITIAL_STEPS=(build_context fetch_asset read_credentials render_profile do_import do_reconfig do_publish wait_publish export_outputs)
+INITIAL_STEPS=(build_context fetch_asset read_credentials do_import render_profile do_reconfig do_publish wait_publish export_outputs)
 
 @test "start-initial: the sourced chain runs every step and reaches the end" {
 	seed_as "0.9.0"
@@ -76,6 +76,23 @@ INITIAL_STEPS=(build_context fetch_asset read_credentials render_profile do_impo
 	refute_line "CHAIN-COMPLETED"
 	assert_line "  💡 Possible causes: the Foundry technical user is locked or the password rotated"
 	assert_mfcli_calls "mfcli Import -u np-foundry -p *** -t 100000001 -f $BATS_TEST_TMPDIR/work/77/foundry.zip -a PetStore -v 1.0.0"
+}
+
+@test "start-initial: a chain that dies at import leaves no service profile on disk, and a residual one is removed" {
+	seed_as "0.9.0"
+	local work="$BATS_TEST_TMPDIR/work/77"
+	mkdir -p "$work"
+	echo '{"left": "by a previous run"}' > "$work/profile.json"
+	export MFCLI_MOCK_VALID_PASSWORD="rotated-password"
+
+	run_chain "${INITIAL_STEPS[@]}"
+
+	assert_equal "$status" "1"
+	refute_line "CHAIN-COMPLETED"
+	assert_line "   🧹 Removed a service profile left by a previous run of deployment 77"
+	assert_line "  💡 Possible causes: the Foundry technical user is locked or the password rotated"
+	assert_file_not_exists "$work/profile.json"
+	assert_mfcli_calls "mfcli Import -u np-foundry -p *** -t 100000001 -f $work/foundry.zip -a PetStore -v 1.0.0"
 }
 
 @test "start-initial: parameter values and the password never reach the argv of jq" {

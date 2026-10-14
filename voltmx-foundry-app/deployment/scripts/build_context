@@ -33,7 +33,7 @@
 #   MFCLI_AUTH_ARGS         "-t <account>" (cloud) or "-au <identity url> -cu <console url>"
 #   CREDENTIALS_SECRET      secret with {"username","password"}, under SECRETS_PREFIX
 #   SECRETS_PREFIX          secrets_prefix of the scope configuration, else voltmx/<namespace slug>/
-#   ASSETS_BUCKET, ASSETS_REGION
+#   ASSETS_BUCKET, ASSETS_REGION, ASSETS_PREFIX (values.yaml, default foundry/: the prefix the IAM role reads)
 #   SCOPE_CONFIGURATION     the whole 'Volt MX Foundry app' scope configuration (JSON)
 #   MFCLI_CMD               only when the scope configuration sets mfcli.command (the bundled mock, testing only)
 #   PROFILE_VARS            {"<variable>": "<value>"} from .parameters.results (never printed)
@@ -367,6 +367,17 @@ if ! [[ "$ASSETS_BUCKET" =~ ^[a-z0-9.-]+$ ]]; then
 	} >&2
 	exit 1
 fi
+ASSETS_PREFIX="${ASSETS_PREFIX:-foundry/}"
+if ! [[ "$ASSETS_PREFIX" =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*/$ ]]; then
+	{
+		echo "   ❌ Invalid ASSETS_PREFIX '$ASSETS_PREFIX': must be a folder of the assets bucket ending in / (e.g. foundry/)"
+		echo "  💡 Possible causes:"
+		echo "    • ASSETS_PREFIX in values.yaml is empty, has no trailing slash or carries wildcards"
+		echo "  🔧 How to fix:"
+		echo "    • Set ASSETS_PREFIX to the prefix the CI uploads the exported apps under, the same assets_prefix the IAM module of the scope grants"
+	} >&2
+	exit 1
+fi
 if ! [[ "$ASSETS_REGION" =~ ^[a-z0-9-]+$ ]]; then
 	{
 		echo "   ❌ Invalid assets region '$ASSETS_REGION': only lowercase letters, digits and dashes are allowed"
@@ -493,7 +504,7 @@ echo "   ✅ environment_name=$ENVIRONMENT_NAME"
 echo "   ✅ auth=$auth_summary"
 echo "   ✅ foundry_app=$FOUNDRY_APP is allowed for this scope ($binding_summary)"
 echo "   ✅ credentials_secret=$CREDENTIALS_SECRET (secrets prefix $SECRETS_PREFIX)"
-echo "   ✅ assets_bucket=$ASSETS_BUCKET (region $ASSETS_REGION)"
+echo "   ✅ assets_bucket=$ASSETS_BUCKET (region $ASSETS_REGION, prefix $ASSETS_PREFIX)"
 
 # =============================================================================
 # Build asset: the exported app zip, named 'foundry', of the type of the asset
@@ -619,6 +630,12 @@ WORKDIR_BASE="${WORKDIR_BASE:-${WORKDIR:-/tmp/voltmx-foundry-app}}"
 if [ -n "$DEPLOYMENT_ID" ]; then
 	WORKDIR="$WORKDIR_BASE/$DEPLOYMENT_ID"
 	(umask 077 && mkdir -p "$WORKDIR") || exit 1
+	# A profile left by a run that died between render_profile and do_reconfig
+	# carries parameter values: never keep it around.
+	if [ -f "$WORKDIR/profile.json" ]; then
+		rm -f "$WORKDIR/profile.json"
+		echo "   🧹 Removed a service profile left by a previous run of deployment $DEPLOYMENT_ID"
+	fi
 else
 	(umask 077 && mkdir -p "$WORKDIR_BASE") || exit 1
 	WORKDIR=$(mktemp -d "$WORKDIR_BASE/scope-$SCOPE_ID-XXXXXX") || exit 1
@@ -633,7 +650,7 @@ echo "✨ Build context ready"
 
 export BUILD_CONTEXT_MODE CONTEXT SCOPE_CONFIGURATION
 export FOUNDRY_APP APP_VERSION ASSET_TYPE ASSET_URL
-export ENVIRONMENT_NAME MFCLI_AUTH_ARGS CREDENTIALS_SECRET SECRETS_PREFIX ASSETS_BUCKET ASSETS_REGION PROFILE_VARS
+export ENVIRONMENT_NAME MFCLI_AUTH_ARGS CREDENTIALS_SECRET SECRETS_PREFIX ASSETS_BUCKET ASSETS_REGION ASSETS_PREFIX PROFILE_VARS
 export RELEASE_SEMVER DEPLOYMENT_ID SCOPE_ID DIMENSION APPLICATION_SLUG NAMESPACE_SLUG SCOPE_SLUG
 export PREVIOUS_DEPLOYMENT_ID PREVIOUS_RELEASE_SEMVER
 export WORKDIR_BASE WORKDIR

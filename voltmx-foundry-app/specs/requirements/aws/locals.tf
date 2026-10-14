@@ -17,7 +17,9 @@ locals {
 
   assets_bucket_arn  = "arn:aws:s3:::${var.assets_bucket_name}"
   assets_objects_arn = "${local.assets_bucket_arn}/${var.assets_prefix}*"
-  secrets_prefix_arn = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.secrets_prefix}*"
+  # A folder: "voltmx" would also match voltmx-other/*.
+  secrets_prefix     = endswith(var.secrets_prefix, "/") ? var.secrets_prefix : "${var.secrets_prefix}/"
+  secrets_prefix_arn = "arn:aws:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${local.secrets_prefix}*"
 
   # Default tags applied to every IAM resource
   iam_default_tags = merge(var.iam_resource_tags_json, {

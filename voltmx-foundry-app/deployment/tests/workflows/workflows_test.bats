@@ -127,7 +127,7 @@ EOF
 	step_summary "$SCOPE_DIR/deployment/workflows/initial.yaml"
 
 	assert_equal "$status" "0"
-	assert_equal "$output" "assume role:,build context:,fetch asset:,read credentials:,render profile:,import:,apply profile:,publish:,wait publish:,export outputs:"
+	assert_equal "$output" "assume role:,build context:,fetch asset:,read credentials:,import:,render profile:,apply profile:,publish:,wait publish:,export outputs:"
 }
 
 @test "Should run the scope context and the credentials check on create and update, and nothing in Foundry" {

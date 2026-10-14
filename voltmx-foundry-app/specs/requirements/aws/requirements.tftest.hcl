@@ -120,6 +120,19 @@ run "custom_prefixes" {
   }
 }
 
+run "normalises_secrets_prefix_to_a_folder" {
+  command = plan
+
+  variables {
+    secrets_prefix = "voltmx"
+  }
+
+  assert {
+    condition     = local.secrets_prefix_arn == "arn:aws:secretsmanager:us-east-1:123456789012:secret:voltmx/*"
+    error_message = "a secrets_prefix without a trailing slash must be treated as a folder"
+  }
+}
+
 run "no_role_when_disabled" {
   command = apply
 

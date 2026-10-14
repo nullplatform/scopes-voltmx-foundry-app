@@ -44,6 +44,8 @@ steps:
         type: environment
       - name: ASSETS_REGION
         type: environment
+      - name: ASSETS_PREFIX
+        type: environment
       - name: RELEASE_SEMVER
         type: environment
       - name: DEPLOYMENT_ID

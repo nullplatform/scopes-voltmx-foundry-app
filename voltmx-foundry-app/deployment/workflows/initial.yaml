@@ -1,6 +1,6 @@
-# start-initial: import the exported Foundry app of the release, apply the
-# service profile (the application parameters) and publish the version to the
-# Foundry environment of the scope configuration.
+# start-initial: import the exported Foundry app of the release, render and
+# apply the service profile (the application parameters) and publish the
+# version to the Foundry environment of the scope configuration.
 #
 # How the engine runs it: np service workflow exec builds ONE `bash -c` that
 # sources every step, joined by &&. So:
@@ -59,6 +59,8 @@ steps:
         type: environment
       - name: ASSETS_REGION
         type: environment
+      - name: ASSETS_PREFIX
+        type: environment
       - name: PROFILE_VARS
         type: environment
       - name: RELEASE_SEMVER
@@ -97,12 +99,14 @@ steps:
         type: environment
       - name: MFCLI_PASSWORD
         type: environment
-  - name: render profile
-    type: script
-    file: "$SERVICE_PATH/deployment/scripts/render_profile"
   - name: import
     type: script
     file: "$SERVICE_PATH/deployment/scripts/do_import"
+  # Rendered right before it is applied (never earlier): the profile carries
+  # parameter values, and apply profile deletes it whatever the outcome.
+  - name: render profile
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/render_profile"
   - name: apply profile
     type: script
     file: "$SERVICE_PATH/deployment/scripts/do_reconfig"

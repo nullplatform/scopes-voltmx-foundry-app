@@ -10,3 +10,4 @@ configuration:
   PUBLISH_POLL_SECONDS: 15                      # how often publish-status is polled
   MFCLI_CALL_TIMEOUT_SECONDS: 300               # upper bound for a single mfcli call (a hung CLI is stopped)
   WORKDIR: /tmp/voltmx-foundry-app              # scratch directory (one subdirectory per deployment)
+  ASSETS_PREFIX: foundry/                       # key prefix of the assets bucket the CI uploads the exported apps under (= assets_prefix of specs/requirements/aws)

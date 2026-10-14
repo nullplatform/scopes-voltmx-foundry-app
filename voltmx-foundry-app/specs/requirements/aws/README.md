@@ -48,8 +48,8 @@ module "agent_iam" {
 |---|---|---|
 | `cluster_name` | (required) | Cluster name; derives default resource names. |
 | `assets_bucket_name` | (required) | Bucket the CI uploads the exported apps to (the scope configuration's `assets.bucket`). |
-| `assets_prefix` | `foundry/` | Key prefix of the bucket the role may read. |
-| `secrets_prefix` | `voltmx/` | Secrets Manager name prefix the scope may read (one folder per namespace below it). |
+| `assets_prefix` | `foundry/` | Key prefix of the bucket the role may read; keep it equal to `ASSETS_PREFIX` in `values.yaml`. |
+| `secrets_prefix` | `voltmx/` | Secrets Manager folder the scope may read (one folder per namespace below it); a trailing `/` is added when missing. |
 | `agent_role_arn` | `""` → derived | Agent role trusted to assume this role. Empty derives `nullplatform-<cluster>-agent-role`. |
 | `additional_agent_role_arns` | `[]` | Extra trusted principals. |
 | `role_name` | `""` → `nullplatform_<cluster>_voltmx_foundry_app_role` | Override for the role name. |

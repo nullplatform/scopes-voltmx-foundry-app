@@ -76,6 +76,7 @@ use_context_configuration() {
 	assert_equal "$SECRETS_PREFIX" "voltmx/mobile/"
 	assert_equal "$ASSETS_BUCKET" "assets-aws-mobile"
 	assert_equal "$ASSETS_REGION" "us-east-1"
+	assert_equal "$ASSETS_PREFIX" "foundry/"
 	assert_json_equal "$PROFILE_VARS" '{"CORE_BASE_URL":"https://core.uat.petstore.io","IDP_CLIENT_SECRET":"idp-s3cr3t-value"}' "PROFILE_VARS"
 	assert_equal "$DEPLOYMENT_ID" "77"
 	assert_equal "$SCOPE_ID" "7"
@@ -105,7 +106,7 @@ use_context_configuration() {
 	assert_line "   ✅ auth=cloud (account 100000001)"
 	assert_line "   ✅ foundry_app=PetStore is allowed for this scope (allowed_apps: PetStore)"
 	assert_line "   ✅ credentials_secret=voltmx/mobile/foundry-uat (secrets prefix voltmx/mobile/)"
-	assert_line "   ✅ assets_bucket=assets-aws-mobile (region us-east-1)"
+	assert_line "   ✅ assets_bucket=assets-aws-mobile (region us-east-1, prefix foundry/)"
 	assert_line "   ✅ foundry asset -> s3://assets-aws-mobile/foundry/442353700/30/PetStore.zip (type bundle, build 30)"
 	assert_line "   📋 Profile variables: CORE_BASE_URL, IDP_CLIENT_SECRET"
 	assert_line "   📋 Previous deployment: 70 (release 0.9.0)"
@@ -114,6 +115,19 @@ use_context_configuration() {
 	refute_output_contains "idp-s3cr3t-value"
 	refute_output_contains "https://core.uat.petstore.io"
 	refute_output_contains "marker"
+}
+
+@test "Should remove a service profile left in the workdir by a previous run" {
+	mkdir -p "$WORKDIR/77"
+	echo '{"CORE_BASE_URL": "https://core.uat.petstore.io"}' > "$WORKDIR/77/profile.json"
+	echo '{}' > "$WORKDIR/77/foundry.json"
+
+	run source "$SCRIPT"
+
+	assert_equal "$status" "0"
+	assert_line "   🧹 Removed a service profile left by a previous run of deployment 77"
+	assert_file_not_exists "$WORKDIR/77/profile.json"
+	assert_file_exists "$WORKDIR/77/foundry.json"
 }
 
 @test "Should keep the same workdir when sourced twice in the same session" {
@@ -219,6 +233,30 @@ use_context_configuration() {
 # =============================================================================
 # Developer capabilities and release
 # =============================================================================
+@test "Should reject an asset outside the assets prefix the scope role reads, naming the prefix" {
+	with_context '.asset.url = "s3://assets-aws-mobile/web/442353700/30/PetStore.zip"'
+
+	run source "$SCRIPT"
+
+	assert_equal "$status" "1"
+	assert_line "   ❌ Asset URL is outside the 'foundry/' prefix of the assets bucket 'assets-aws-mobile': s3://assets-aws-mobile/web/442353700/30/PetStore.zip"
+	assert_line "    • Make the CI upload the exported app under s3://assets-aws-mobile/foundry/ and register that url"
+
+	export ASSETS_PREFIX="web/"
+	run source "$SCRIPT"
+	assert_equal "$status" "0"
+	assert_line "   ✅ foundry asset -> s3://assets-aws-mobile/web/442353700/30/PetStore.zip (type bundle, build 30)"
+}
+
+@test "Should reject an ASSETS_PREFIX that is not a folder" {
+	local prefix
+	for prefix in "foundry" "foundry/*" "/foundry/" "a b/"; do
+		ASSETS_PREFIX="$prefix" run source "$SCRIPT"
+		assert_equal "$status" "1"
+		assert_line "   ❌ Invalid ASSETS_PREFIX '$prefix': must be a folder of the assets bucket ending in / (e.g. foundry/)"
+	done
+}
+
 @test "Should reject a Foundry app name with path characters or spaces" {
 	local name
 	for name in "../PetStore" "Pet Store" "-pet" "Pet..Store"; do

@@ -32,7 +32,7 @@ MFCLI_RUN = "deployment/scripts/mfcli_run"
 # consumer key -> (variables it consumes, files/globs that consume them, relative to the scope dir)
 CONSUMES = {
     "fetch_asset": (
-        AWS + ["ASSET_URL", "WORKDIR", "ASSETS_BUCKET", "ASSETS_REGION", "FOUNDRY_APP", "APP_VERSION"],
+        AWS + ["ASSET_URL", "WORKDIR", "ASSETS_BUCKET", "ASSETS_REGION", "ASSETS_PREFIX", "FOUNDRY_APP", "APP_VERSION"],
         ["deployment/scripts/fetch_asset", "deployment/scripts/download_asset", "deployment/scripts/validators"]),
     "read_credentials": (
         AWS + ["CREDENTIALS_SECRET", "SECRETS_PREFIX", "ASSETS_REGION"],

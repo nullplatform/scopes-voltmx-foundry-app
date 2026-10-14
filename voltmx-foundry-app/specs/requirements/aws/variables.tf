@@ -60,7 +60,7 @@ variable "assets_bucket_name" {
 }
 
 variable "secrets_prefix" {
-  description = "Secrets Manager name prefix the scope reads the Foundry technical user from (the scope configuration's credentials_secret, one folder per namespace below it). The role can read every secret whose name starts with it."
+  description = "Secrets Manager name prefix the scope reads the Foundry technical user from (the scope configuration's credentials_secret, one folder per namespace below it). The role can read every secret in that folder (a trailing / is added when missing, so voltmx never matches voltmx-other/*)."
   type        = string
   default     = "voltmx/"
 

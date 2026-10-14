@@ -18,8 +18,9 @@
 #       (SECRETS_PREFIX, default voltmx/<namespace slug>/), so a scope cannot
 #       use the Foundry technical user of another team.
 #   validate_asset_url <url>
-#       Assets must come from ASSETS_BUCKET: s3://<bucket>/... or the
-#       virtual-hosted https url of the bucket.
+#       Assets must come from ASSETS_BUCKET (s3://<bucket>/... or the
+#       virtual-hosted https url of the bucket) and under ASSETS_PREFIX
+#       (default foundry/), the prefix the IAM role of the scope reads.
 #
 # Each prints the troubleshooting block to stderr and returns 1 on rejection.
 # =============================================================================
@@ -89,7 +90,7 @@ validate_secret_in_prefix() {
 }
 
 validate_asset_url() {
-	local url="$1" bucket="${ASSETS_BUCKET:-}" host
+	local url="$1" bucket="${ASSETS_BUCKET:-}" prefix="${ASSETS_PREFIX:-foundry/}" host key=""
 
 	if [ -z "$bucket" ]; then
 		{
@@ -102,21 +103,22 @@ validate_asset_url() {
 		return 1
 	fi
 
+	# The key inside the bucket, or empty when the url is not the bucket's.
 	if [[ "$url" != *" "* ]] && [[ "$url" != *".."* ]]; then
 		case "$url" in
-			"s3://$bucket/"?*) return 0 ;;
+			"s3://$bucket/"?*) key="${url#s3://"$bucket"/}" ;;
 			https://*)
 				host="${url#https://}"
 				host="${host%%/*}"
 				case "$host" in
 					"$bucket.s3.amazonaws.com")
-						[[ "${url#https://"$host"/}" != "$url" ]] && return 0
+						[[ "${url#https://"$host"/}" != "$url" ]] && key="${url#https://"$host"/}"
 						;;
 					"$bucket.s3."*".amazonaws.com")
 						local region="${host#"$bucket".s3.}"
 						region="${region%.amazonaws.com}"
 						if [[ "$region" =~ ^[a-z0-9-]+$ ]] && [[ "${url#https://"$host"/}" != "$url" ]]; then
-							return 0
+							key="${url#https://"$host"/}"
 						fi
 						;;
 				esac
@@ -124,13 +126,30 @@ validate_asset_url() {
 		esac
 	fi
 
+	if [ -z "$key" ]; then
+		{
+			echo "   ❌ Asset URL is outside the configured assets bucket '$bucket': $url"
+			echo "  💡 Possible causes:"
+			echo "    • The CI uploaded the asset to a bucket other than assets.bucket of the 'Volt MX Foundry app' scope configuration"
+			echo "    • The asset url was tampered with"
+			echo "  🔧 How to fix:"
+			echo "    • Make the CI upload the app to s3://$bucket and register that url, or set assets.bucket to the bucket the CI uses"
+		} >&2
+		return 1
+	fi
+
+	# The IAM role of the scope (specs/requirements/aws, assets_prefix) only
+	# reads this prefix of the bucket: refuse the rest here, with the reason.
+	if [[ "$key" == "$prefix"?* ]]; then
+		return 0
+	fi
 	{
-		echo "   ❌ Asset URL is outside the configured assets bucket '$bucket': $url"
+		echo "   ❌ Asset URL is outside the '$prefix' prefix of the assets bucket '$bucket': $url"
 		echo "  💡 Possible causes:"
-		echo "    • The CI uploaded the asset to a bucket other than assets.bucket of the 'Volt MX Foundry app' scope configuration"
-		echo "    • The asset url was tampered with"
+		echo "    • The CI uploaded the Foundry app outside the prefix the scope role may read (ASSETS_PREFIX in values.yaml, assets_prefix of specs/requirements/aws)"
 		echo "  🔧 How to fix:"
-		echo "    • Make the CI upload the app to s3://$bucket and register that url, or set assets.bucket to the bucket the CI uses"
+		echo "    • Make the CI upload the exported app under s3://$bucket/$prefix and register that url"
+		echo "    • Or set ASSETS_PREFIX in values.yaml to the prefix the CI uses, and the same assets_prefix in the IAM module of the scope"
 	} >&2
 	return 1
 }
