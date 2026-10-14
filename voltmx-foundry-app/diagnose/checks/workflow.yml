@@ -1,0 +1,18 @@
+# The checks the diagnose executor runs, in this order. Each is sourced in the
+# workflow shell with SCRIPT_OUTPUT_FILE pointing at its result JSON.
+steps:
+  - name: Console reachable
+    description: The Foundry console of the scope configuration answers HTTPS from the worker (on-premises only)
+    category: Foundry
+    type: script
+    file: "$SERVICE_PATH/diagnose/checks/console_reachable"
+  - name: Credentials valid
+    description: The technical user in credentials_secret can be read from the secrets manager and authenticates against Foundry
+    category: Foundry
+    type: script
+    file: "$SERVICE_PATH/diagnose/checks/credentials_valid"
+  - name: App published
+    description: The app of the scope has an active version in the Foundry environment
+    category: Foundry
+    type: script
+    file: "$SERVICE_PATH/diagnose/checks/app_published"

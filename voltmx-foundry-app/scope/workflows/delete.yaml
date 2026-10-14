@@ -1,0 +1,62 @@
+# delete-scope: unpublish the app from the environment, but only when the
+# active version was released by a finalized deployment of this scope (Foundry
+# environments are shared and Foundry records no owner, so ownership is
+# inferred from the scope's deployment history; see do_unpublish). The
+# imported versions stay in Foundry. Fails closed when that history cannot
+# be read.
+include:
+  - "$SERVICE_PATH/values.yaml"
+steps:
+  - name: assume role
+    type: script
+    file: "$SERVICE_PATH/utils/assume_role_step"
+    output:
+      - name: AWS_ACCESS_KEY_ID
+        type: environment
+      - name: AWS_SECRET_ACCESS_KEY
+        type: environment
+      - name: AWS_SESSION_TOKEN
+        type: environment
+  - name: build context
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/build_context"
+    configuration:
+      BUILD_CONTEXT_MODE: scope
+    output:
+      - name: CONTEXT
+        type: environment
+      - name: SCOPE_CONFIGURATION
+        type: environment
+      - name: FOUNDRY_APP
+        type: environment
+      - name: APP_VERSION
+        type: environment
+      - name: ENVIRONMENT_NAME
+        type: environment
+      - name: MFCLI_AUTH_ARGS
+        type: environment
+      - name: CREDENTIALS_SECRET
+        type: environment
+      - name: SECRETS_PREFIX
+        type: environment
+      - name: ASSETS_REGION
+        type: environment
+      - name: SCOPE_ID
+        type: environment
+      - name: WORKDIR_BASE
+        type: environment
+      - name: WORKDIR
+        type: environment
+  - name: read credentials
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/read_credentials"
+    output:
+      - name: MFCLI_USER
+        type: environment
+      - name: MFCLI_PASSWORD
+        type: environment
+  - name: unpublish
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/do_unpublish"
+    configuration:
+      UNPUBLISH_MODE: scope

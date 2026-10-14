@@ -1,0 +1,75 @@
+# diagnose-scope: run the checks of diagnose/checks against Foundry and report
+# each result to the platform (diagnose/utils/diagnose_utils).
+#
+# The executor sources every check of diagnose/checks/workflow.yml in the
+# workflow shell, with SCRIPT_OUTPUT_FILE (the check's result JSON),
+# SCRIPT_LOG_FILE and NP_OUTPUT_DIR set, runs before_each/after_each around
+# each one and goes on to the next check whatever the result; a check must
+# `return`, never `exit` (that would end the whole workflow). The Foundry
+# credentials are read by the credentials check itself (not by a step) so a
+# missing or wrong secret is a reported finding, not a dead workflow.
+continue_on_error: true
+include:
+  - "$SERVICE_PATH/values.yaml"
+steps:
+  - name: load functions
+    type: script
+    file: "$SERVICE_PATH/diagnose/utils/diagnose_utils"
+    output:
+      - name: update_check_result
+        type: function
+        parameters:
+          status: string
+          evidence: object
+      - name: notify_results
+        type: function
+  - name: assume role
+    type: script
+    file: "$SERVICE_PATH/utils/assume_role_step"
+    output:
+      - name: AWS_ACCESS_KEY_ID
+        type: environment
+      - name: AWS_SECRET_ACCESS_KEY
+        type: environment
+      - name: AWS_SESSION_TOKEN
+        type: environment
+  - name: build context
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/build_context"
+    configuration:
+      BUILD_CONTEXT_MODE: scope
+    output:
+      - name: CONTEXT
+        type: environment
+      - name: SCOPE_CONFIGURATION
+        type: environment
+      - name: FOUNDRY_APP
+        type: environment
+      - name: ENVIRONMENT_NAME
+        type: environment
+      - name: MFCLI_AUTH_ARGS
+        type: environment
+      - name: CREDENTIALS_SECRET
+        type: environment
+      - name: SECRETS_PREFIX
+        type: environment
+      - name: ASSETS_REGION
+        type: environment
+      - name: SCOPE_ID
+        type: environment
+      - name: WORKDIR_BASE
+        type: environment
+      - name: WORKDIR
+        type: environment
+  - name: diagnose
+    type: executor
+    before_each:
+      name: notify_check_running
+      type: script
+      file: "$SERVICE_PATH/diagnose/notify_check_running"
+    after_each:
+      name: notify_check_results
+      type: script
+      file: "$SERVICE_PATH/diagnose/notify_diagnose_results"
+    folders:
+      - "$SERVICE_PATH/diagnose/checks"

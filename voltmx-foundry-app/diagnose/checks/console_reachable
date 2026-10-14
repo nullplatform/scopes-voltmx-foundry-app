@@ -1,0 +1,61 @@
+#!/bin/bash
+# =============================================================================
+# Check: the Foundry console is reachable from the worker
+#
+# On-premises Foundry (auth.identity_url and console_url in the scope
+# configuration): an HTTPS request to the console URL must get an HTTP answer,
+# whatever its status (the console redirects anonymous requests). Volt MX
+# cloud (auth.account_id): there is no URL to probe, the check is skipped and
+# the credentials check covers connectivity.
+#
+# Sourced by the diagnose executor: it returns, never exits. Inputs:
+# MFCLI_AUTH_ARGS (build_context), DIAGNOSE_HTTP_TIMEOUT_SECONDS (default 20).
+# =============================================================================
+
+check_console_reachable() {
+	local -a auth=()
+	local console_url="" previous="" arg http_code curl_error status=0 evidence details
+	local timeout="${DIAGNOSE_HTTP_TIMEOUT_SECONDS:-20}"
+
+	read -r -a auth <<< "${MFCLI_AUTH_ARGS:-}"
+	for arg in ${auth[@]+"${auth[@]}"}; do
+		[ "$previous" = "-cu" ] && console_url="$arg"
+		previous="$arg"
+	done
+
+	if [ -z "$console_url" ]; then
+		print_info "Volt MX cloud (${MFCLI_AUTH_ARGS:-no auth configured}): no console URL to probe; the credentials check covers connectivity"
+		details=$(jq -nc --arg auth "${MFCLI_AUTH_ARGS:-}" '{auth: $auth}')
+		evidence=$(evidence_json "Volt MX cloud: no console URL to probe" "info" "[]" "$details" "[]")
+		update_check_result --status "skipped" --evidence "$evidence"
+		return 0
+	fi
+
+	print_info "Probing $console_url (timeout ${timeout}s)"
+	curl_error=$(mktemp)
+	http_code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time "$timeout" "$console_url" 2>"$curl_error") || status=$?
+	if [ "$status" -ne 0 ]; then
+		print_error "The Foundry console $console_url did not answer: $(head -n 1 "$curl_error")"
+		print_action "Check that the worker reaches the console (network, proxy, DNS) and that auth.console_url of the scope configuration is right"
+		details=$(jq -nc --arg url "$console_url" --arg error "$(head -n 1 "$curl_error")" --argjson timeout "$timeout" \
+			'{console_url: $url, error: $error, timeout_seconds: $timeout}')
+		rm -f "$curl_error"
+		evidence=$(evidence_json "The Foundry console $console_url is not reachable from the worker" "critical" \
+			"$(jq -nc --arg url "$console_url" '[$url]')" "$details" \
+			'["Check that the worker reaches the Foundry console (network, proxy, DNS)", "Check auth.console_url in the Volt MX Foundry app scope configuration"]')
+		update_check_result --status "failed" --evidence "$evidence"
+		return 1
+	fi
+	rm -f "$curl_error"
+
+	print_success "The Foundry console answered HTTP $http_code"
+	details=$(jq -nc --arg url "$console_url" --arg code "$http_code" '{console_url: $url, http_code: $code}')
+	evidence=$(evidence_json "The Foundry console $console_url answered HTTP $http_code" "info" "[]" "$details" "[]")
+	update_check_result --status "success" --evidence "$evidence"
+}
+
+check_console_reachable
+check_console_reachable_status=$?
+unset -f check_console_reachable
+# shellcheck disable=SC2317
+return "$check_console_reachable_status" 2>/dev/null || exit "$check_console_reachable_status"

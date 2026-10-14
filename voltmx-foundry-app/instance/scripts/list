@@ -1,0 +1,105 @@
+#!/bin/bash
+# =============================================================================
+# Last step of the instance workflow: answer instance:data
+#
+# Foundry serves one version of an app per environment, so the scope has one
+# instance at most: the app of the scope in the environment of the scope
+# configuration, with the version publish-status reports. The answer goes to
+# fd 3, the stdout reserve_stdout kept for it (or to stdout when run on its
+# own); every log goes to stderr:
+#
+#   {"results": [{
+#     "id": "<environment>/<app>",
+#     "selector": {"app": "<app>", "environment": "<environment>"},
+#     "state": "Running",
+#     "details": {"app", "environment", "version", "active_version", "status"}
+#   }]}
+#
+# version is the last version a publish was attempted with and status its
+# outcome (success, in_progress, failed); active_version is the one that
+# serves. No instance when the app has no active version or Foundry says it
+# is not published. When publish-status fails for another reason or does not
+# answer JSON the answer is {"results": []} and the step fails.
+#
+# The workdir of this run ($WORKDIR_BASE/scope-<id>-XXXXXX, unique per run,
+# from build_context in scope mode) is removed when the step ends, whatever
+# the outcome. A WORKDIR outside that pattern (a deployment's) is never touched.
+#
+# Inputs: FOUNDRY_APP, ENVIRONMENT_NAME and the credentials mfcli_run needs
+# (MFCLI_USER, MFCLI_PASSWORD, MFCLI_AUTH_ARGS): build_context and
+# read_credentials ran in the previous steps.
+# =============================================================================
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../deployment/scripts" && pwd)/mfcli_run"
+
+voltmx_foundry_app_instance_cleanup() {
+	local base="${WORKDIR_BASE:-}" workdir="${WORKDIR:-}"
+	if [ -n "$base" ] && [ -d "$workdir" ] && [[ "$workdir" == "$base"/scope-*-* ]] && [[ "$workdir" != *"/.."* ]]; then
+		rm -rf "$workdir"
+	fi
+}
+
+# Prints the answer; returns 1 when Foundry could not be asked.
+voltmx_foundry_app_instance_answer() {
+	local app="${FOUNDRY_APP:-}" env_name="${ENVIRONMENT_NAME:-}" first_line
+
+	if [ -z "$app" ] || [ -z "$env_name" ]; then
+		{
+			echo "   ❌ FOUNDRY_APP or ENVIRONMENT_NAME is not set"
+			echo "  🔧 How to fix:"
+			echo "    • Run the instance workflow from the start so build_context resolves the scope"
+		} >&2
+		echo '{"results":[]}'
+		return 1
+	fi
+
+	if ! MFCLI_RUN_QUIET=1 mfcli_run publish-status -e "$env_name" -a "$app"; then
+		first_line=$(printf '%s\n' "$MFCLI_ERROR" | sed '/^[[:space:]]*$/d' | head -n 1)
+		if printf '%s' "$first_line" | grep -qiE "not published|not found|does not exist"; then
+			echo "   📋 $app is not published in environment $env_name; no instances" >&2
+			echo '{"results":[]}'
+			return 0
+		fi
+		mfcli_explain_error
+		echo '{"results":[]}'
+		return 1
+	fi
+
+	if ! printf '%s' "$MFCLI_OUTPUT" | jq -e 'type == "object" and (.status | type == "string")' >/dev/null 2>&1; then
+		{
+			echo "   ❌ publish-status of $app did not return the expected JSON ({\"status\", \"version\", \"active_version\"})"
+			echo "  💡 Possible causes:"
+			echo "    • The installed mfcli prints publish-status in another format than the one this scope expects"
+			echo "  🔧 How to fix:"
+			echo "    • Check $app in the Foundry console (environment $env_name) and adapt instance/scripts/list to this mfcli version"
+		} >&2
+		echo '{"results":[]}'
+		return 1
+	fi
+
+	printf '%s' "$MFCLI_OUTPUT" | jq -c --arg app "$app" --arg env "$env_name" '
+		if ((.active_version // "") | tostring) == "" then {results: []}
+		else {results: [{
+			id: ($env + "/" + $app),
+			selector: {app: $app, environment: $env},
+			state: "Running",
+			details: {
+				app: $app,
+				environment: $env,
+				version: (.version // null),
+				active_version: .active_version,
+				status: .status
+			}
+		}]} end'
+}
+
+voltmx_foundry_app_instance_list() {
+	local answer_fd="${VOLTMX_FOUNDRY_APP_ANSWER_FD:-1}" status=0 answer
+	answer=$(voltmx_foundry_app_instance_answer) || status=$?
+	printf '%s\n' "$answer" >&"$answer_fd"
+	voltmx_foundry_app_instance_cleanup
+	return "$status"
+}
+
+voltmx_foundry_app_instance_list

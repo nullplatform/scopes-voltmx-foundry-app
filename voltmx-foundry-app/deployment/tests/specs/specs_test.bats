@@ -29,7 +29,7 @@ render() {
 	gomplate -f "$1"
 }
 
-EXPECTED_ACTIONS='["create-scope","update-scope","delete-scope","start-initial","rollback-deployment","delete-deployment"]'
+EXPECTED_ACTIONS='["create-scope","update-scope","delete-scope","start-initial","rollback-deployment","delete-deployment","diagnose-scope"]'
 
 @test "Every spec template renders into valid JSON" {
 	local count=0
@@ -40,7 +40,7 @@ EXPECTED_ACTIONS='["create-scope","update-scope","delete-scope","start-initial",
 	done
 	local expected
 	expected=$(( $(find "$SPECS_DIR" -maxdepth 1 -name "*.json.tpl" | wc -l) + $(find "$SPECS_DIR/actions" -name "*.json.tpl" | wc -l) ))
-	assert_equal "$count" "10"
+	assert_equal "$count" "11"
 	assert_equal "$count" "$expected"
 }
 

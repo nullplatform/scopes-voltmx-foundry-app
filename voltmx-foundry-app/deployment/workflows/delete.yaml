@@ -1,0 +1,65 @@
+# delete-deployment, also for failed deployments: the version of the
+# deployment is unpublished only when it is the one active in the environment
+# (deleting an old or failed deployment must not take down the version that
+# serves). do_unpublish fails open in deployment mode: when the publish status
+# cannot be read it warns and leaves the app as it is, so a deployment can
+# always be deleted. build_context runs in rollback mode (no asset, no profile
+# variables): a deployment whose build has no asset must still be deletable.
+include:
+  - "$SERVICE_PATH/values.yaml"
+steps:
+  - name: assume role
+    type: script
+    file: "$SERVICE_PATH/utils/assume_role_step"
+    output:
+      - name: AWS_ACCESS_KEY_ID
+        type: environment
+      - name: AWS_SECRET_ACCESS_KEY
+        type: environment
+      - name: AWS_SESSION_TOKEN
+        type: environment
+  - name: build context
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/build_context"
+    configuration:
+      BUILD_CONTEXT_MODE: rollback
+    output:
+      - name: CONTEXT
+        type: environment
+      - name: SCOPE_CONFIGURATION
+        type: environment
+      - name: FOUNDRY_APP
+        type: environment
+      - name: APP_VERSION
+        type: environment
+      - name: ENVIRONMENT_NAME
+        type: environment
+      - name: MFCLI_AUTH_ARGS
+        type: environment
+      - name: CREDENTIALS_SECRET
+        type: environment
+      - name: SECRETS_PREFIX
+        type: environment
+      - name: ASSETS_REGION
+        type: environment
+      - name: DEPLOYMENT_ID
+        type: environment
+      - name: SCOPE_ID
+        type: environment
+      - name: WORKDIR_BASE
+        type: environment
+      - name: WORKDIR
+        type: environment
+  - name: read credentials
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/read_credentials"
+    output:
+      - name: MFCLI_USER
+        type: environment
+      - name: MFCLI_PASSWORD
+        type: environment
+  - name: unpublish
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/do_unpublish"
+    configuration:
+      UNPUBLISH_MODE: deployment

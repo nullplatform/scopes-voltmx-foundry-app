@@ -1,0 +1,108 @@
+#!/bin/bash
+# =============================================================================
+# Check: the app of the scope has an active version in the environment
+#
+# `mfcli publish-status -e <environment> -a <app>` answers {"status",
+# "version", "active_version"}: active_version is the version Foundry serves,
+# version the last one a publish was attempted with and status its outcome.
+#   success with an active version   -> success
+#   in_progress                      -> warning (a publish is still running)
+#   failed with an active version    -> warning (the previous version serves)
+#   no active version, not published -> failed
+# Skipped when the credentials check could not load the Foundry user.
+#
+# Sourced by the diagnose executor: it returns, never exits. Inputs:
+# FOUNDRY_APP, ENVIRONMENT_NAME (build_context), MFCLI_USER, MFCLI_PASSWORD
+# (credentials_valid), MFCLI_AUTH_ARGS, MFCLI_CMD.
+# =============================================================================
+
+check_app_published() {
+	local app="${FOUNDRY_APP:-}" env_name="${ENVIRONMENT_NAME:-}"
+	local evidence details first_line publish_status version active affected
+
+	if [ -z "${MFCLI_USER:-}" ] || [ -z "${MFCLI_PASSWORD:-}" ]; then
+		print_warning "No Foundry credentials loaded (the credentials check did not pass); skipped"
+		evidence=$(evidence_json "Skipped: the Foundry credentials are not available" "info" "[]" \
+			"$(jq -nc --arg app "$app" --arg env "$env_name" '{app: $app, environment: $env}')" \
+			'["Fix the credentials check first"]')
+		update_check_result --status "skipped" --evidence "$evidence"
+		return 0
+	fi
+
+	# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+	source "${SERVICE_PATH:?SERVICE_PATH is not set}/deployment/scripts/mfcli_run"
+	affected=$(jq -nc --arg app "$app" --arg env "$env_name" '[$env + "/" + $app]')
+
+	print_info "Reading the publish status of $app in environment $env_name"
+	if ! MFCLI_RUN_QUIET=1 mfcli_run publish-status -e "$env_name" -a "$app"; then
+		first_line=$(printf '%s\n' "$MFCLI_ERROR" | sed '/^[[:space:]]*$/d' | head -n 1)
+		details=$(jq -nc --arg app "$app" --arg env "$env_name" --arg error "${first_line:-no error message}" --argjson status "${MFCLI_LAST_STATUS:-1}" \
+			'{app: $app, environment: $env, error: $error, exit_status: $status}')
+		if printf '%s' "$first_line" | grep -qiE "not published|not found|does not exist"; then
+			print_error "$app is not published in environment $env_name: $first_line"
+			print_action "Deploy a release of the scope: start-initial imports and publishes the app"
+			evidence=$(evidence_json "$app is not published in environment $env_name" "critical" "$affected" "$details" \
+				'["Deploy a release of the scope: start-initial imports the exported app and publishes it", "Check in the Foundry console that the app name of the scope matches the app in Foundry"]')
+		else
+			print_error "Could not read the publish status of $app in environment $env_name: ${first_line:-no error message}"
+			mfcli_explain_error 2>&1 | sed 's/^/  /'
+			evidence=$(evidence_json "publish-status of $app in environment $env_name failed: ${first_line:-no error message}" "critical" "$affected" "$details" \
+				'["Check that the worker reaches Foundry and that the technical user may read the app", "Check the app in the Foundry console"]')
+		fi
+		update_check_result --status "failed" --evidence "$evidence"
+		return 1
+	fi
+
+	if ! printf '%s' "$MFCLI_OUTPUT" | jq -e 'type == "object" and (.status | type == "string")' >/dev/null 2>&1; then
+		print_error "publish-status of $app did not return the expected JSON ({\"status\", \"version\", \"active_version\"})"
+		evidence=$(evidence_json "publish-status of $app answered in an unexpected format" "critical" "$affected" \
+			"$(jq -nc --arg app "$app" --arg env "$env_name" '{app: $app, environment: $env}')" \
+			'["Check the app in the Foundry console and adapt the scope to the publish-status format of this mfcli version"]')
+		update_check_result --status "failed" --evidence "$evidence"
+		return 1
+	fi
+
+	publish_status=$(printf '%s' "$MFCLI_OUTPUT" | jq -r '.status // empty')
+	version=$(printf '%s' "$MFCLI_OUTPUT" | jq -r '.version // empty')
+	active=$(printf '%s' "$MFCLI_OUTPUT" | jq -r '.active_version // empty')
+	details=$(jq -nc --arg app "$app" --arg env "$env_name" --arg status "$publish_status" --arg version "$version" --arg active "$active" \
+		'{app: $app, environment: $env, status: $status, version: $version, active_version: $active}')
+
+	if [ -z "$active" ]; then
+		print_error "$app has no active version in environment $env_name (last publish: ${version:-none}, status ${publish_status:-unknown})"
+		print_action "Deploy a release of the scope, or check the publish of $app in the Foundry console"
+		evidence=$(evidence_json "$app has no active version in environment $env_name" "critical" "$affected" "$details" \
+			'["Deploy a release of the scope: start-initial imports the exported app and publishes it", "Check the publish logs of the app in the Foundry console"]')
+		update_check_result --status "failed" --evidence "$evidence"
+		return 1
+	fi
+
+	case "$publish_status" in
+		success)
+			print_success "$app version $active is active in environment $env_name"
+			evidence=$(evidence_json "$app version $active is active in environment $env_name" "info" "[]" "$details" "[]")
+			update_check_result --status "success" --evidence "$evidence"
+			return 0
+			;;
+		in_progress)
+			print_warning "A publish of $app version ${version:-unknown} is still in progress in environment $env_name; version $active serves meanwhile"
+			evidence=$(evidence_json "A publish of $app version ${version:-unknown} is in progress; version $active serves" "warning" "$affected" "$details" \
+				'["Wait for the publish to finish, or check it in the Foundry console if it does not"]')
+			update_check_result --status "warning" --evidence "$evidence"
+			return 0
+			;;
+		*)
+			print_warning "The last publish of $app (version ${version:-unknown}) ended with status ${publish_status:-unknown}; version $active still serves in environment $env_name"
+			evidence=$(evidence_json "The last publish of $app version ${version:-unknown} ${publish_status:-failed}; version $active still serves" "warning" "$affected" "$details" \
+				'["Check the publish logs of the app in the Foundry console, fix the app and deploy again"]')
+			update_check_result --status "warning" --evidence "$evidence"
+			return 0
+			;;
+	esac
+}
+
+check_app_published
+check_app_published_status=$?
+unset -f check_app_published
+# shellcheck disable=SC2317
+return "$check_app_published_status" 2>/dev/null || exit "$check_app_published_status"

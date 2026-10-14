@@ -1,0 +1,69 @@
+# rollback-deployment: publish again the version of the previous finalized
+# deployment of the scope (Foundry keeps every imported version, so nothing is
+# downloaded) and wait for it. build_context runs in rollback mode: the previous
+# deployment is resolved, the asset and the profile variables of the release
+# being rolled back are not (they may be what is broken).
+include:
+  - "$SERVICE_PATH/values.yaml"
+steps:
+  - name: assume role
+    type: script
+    file: "$SERVICE_PATH/utils/assume_role_step"
+    output:
+      - name: AWS_ACCESS_KEY_ID
+        type: environment
+      - name: AWS_SECRET_ACCESS_KEY
+        type: environment
+      - name: AWS_SESSION_TOKEN
+        type: environment
+  - name: build context
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/build_context"
+    configuration:
+      BUILD_CONTEXT_MODE: rollback
+    output:
+      - name: CONTEXT
+        type: environment
+      - name: SCOPE_CONFIGURATION
+        type: environment
+      - name: FOUNDRY_APP
+        type: environment
+      - name: APP_VERSION
+        type: environment
+      - name: ENVIRONMENT_NAME
+        type: environment
+      - name: MFCLI_AUTH_ARGS
+        type: environment
+      - name: CREDENTIALS_SECRET
+        type: environment
+      - name: SECRETS_PREFIX
+        type: environment
+      - name: ASSETS_BUCKET
+        type: environment
+      - name: ASSETS_REGION
+        type: environment
+      - name: RELEASE_SEMVER
+        type: environment
+      - name: DEPLOYMENT_ID
+        type: environment
+      - name: SCOPE_ID
+        type: environment
+      - name: PREVIOUS_DEPLOYMENT_ID
+        type: environment
+      - name: PREVIOUS_RELEASE_SEMVER
+        type: environment
+      - name: WORKDIR_BASE
+        type: environment
+      - name: WORKDIR
+        type: environment
+  - name: read credentials
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/read_credentials"
+    output:
+      - name: MFCLI_USER
+        type: environment
+      - name: MFCLI_PASSWORD
+        type: environment
+  - name: rollback
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/do_rollback"

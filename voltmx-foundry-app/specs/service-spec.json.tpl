@@ -9,7 +9,8 @@
     "delete-scope",
     "start-initial",
     "rollback-deployment",
-    "delete-deployment"
+    "delete-deployment",
+    "diagnose-scope"
   ],
   "visible_to": [
     "{{ env.Getenv "NRN" }}"

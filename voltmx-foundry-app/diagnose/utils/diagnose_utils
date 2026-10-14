@@ -1,0 +1,176 @@
+#!/bin/bash
+# =============================================================================
+# Functions of the diagnose workflow (sourced by its first step, so every
+# check of diagnose/checks can use them). Same contract as the k8s scope of
+# nullplatform/scopes: the executor sources each check with
+# SCRIPT_OUTPUT_FILE (its result JSON, status pending), SCRIPT_LOG_FILE (its
+# stdout) and NP_OUTPUT_DIR (every result) set; the check reports with
+# update_check_result and after_each sends the results with notify_results.
+#
+# Evidence schema (passed to update_check_result --evidence):
+#   {
+#     "summary":           "one-line summary of the finding",
+#     "severity":          "critical" | "warning" | "info",
+#     "affected":          ["resource", ...],
+#     "details":           { check-specific data },
+#     "suggested_actions": ["what to do"]
+#   }
+# critical goes with status failed, warning with status warning, info with
+# success or skipped. Evidence never carries a password, a token or a
+# parameter value.
+# =============================================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# evidence_json <summary> <severity> <affected json array> <details json object> <actions json array>
+evidence_json() {
+	local summary="$1" severity="$2" affected="${3:-}" details="${4:-}" actions="${5:-}"
+	[ -n "$affected" ] || affected="[]"
+	[ -n "$details" ] || details="{}"
+	[ -n "$actions" ] || actions="[]"
+	jq -n \
+		--arg summary "$summary" \
+		--arg severity "$severity" \
+		--argjson affected "$affected" \
+		--argjson details "$details" \
+		--argjson actions "$actions" \
+		'{summary: $summary, severity: $severity, affected: $affected, details: $details, suggested_actions: $actions}'
+}
+
+# Newline-delimited stdin -> JSON array of non-empty strings, each cut at
+# EVIDENCE_LOG_LINE_MAX_CHARS (default 2000).
+lines_to_json_array() {
+	local max="${EVIDENCE_LOG_LINE_MAX_CHARS:-2000}"
+	jq -R -s --argjson max "$max" '
+		split("\n")
+		| map(select(length > 0))
+		| map(if length > $max then .[:$max] + "…[truncated]" else . end)'
+}
+
+print_success() { echo -e "${GREEN}✓${NC} $1"; }
+print_error() { echo -e "${RED}✗${NC} $1"; }
+print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
+print_info() { echo -e "${CYAN}ℹ${NC} $1"; }
+print_action() { echo -e "${CYAN}🔧${NC} $1"; }
+
+# update_check_result --status <status> --evidence <json> [--log-tail-lines N]
+# (or the positional form: update_check_result <status> <json>). Writes the
+# status, the evidence and the tail of the check's log into SCRIPT_OUTPUT_FILE.
+update_check_result() {
+	local status="" evidence="" log_tail_lines=20 output_file log_array="[]" timestamp status_lower tmpfile jq_filter
+
+	if [[ "${1:-}" == --* ]]; then
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				--status) status="${2:-}"; shift 2 ;;
+				--evidence) evidence="${2:-}"; shift 2 ;;
+				--log-tail-lines) log_tail_lines="${2:-20}"; shift 2 ;;
+				*) echo "Unknown parameter: $1" >&2; return 1 ;;
+			esac
+		done
+	else
+		status="${1:-}"
+		evidence="${2:-}"
+	fi
+
+	if [ -z "$status" ] || [ -z "$evidence" ]; then
+		echo "Error: status and evidence are required" >&2
+		return 1
+	fi
+
+	output_file="${SCRIPT_OUTPUT_FILE:-}"
+	if [ -z "$output_file" ] || [ ! -f "$output_file" ]; then
+		echo "Error: SCRIPT_OUTPUT_FILE is not set or not found: ${output_file:-(unset)}" >&2
+		return 1
+	fi
+
+	if [ -n "${SCRIPT_LOG_FILE:-}" ] && [ -f "$SCRIPT_LOG_FILE" ]; then
+		if ! log_array=$(grep -v '^[[:space:]]*$' "$SCRIPT_LOG_FILE" | tail -n "$log_tail_lines" | lines_to_json_array); then
+			echo "Error: Failed to read log file: $SCRIPT_LOG_FILE" >&2
+			return 1
+		fi
+	fi
+
+	timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+	status_lower=$(echo "$status" | tr '[:upper:]' '[:lower:]')
+
+	jq_filter='.status = ($status | ascii_downcase) | .evidence = $evidence | .logs = $logs'
+	case "$status_lower" in
+		running) jq_filter="$jq_filter | .start_at = \$timestamp" ;;
+		success | failed | warning | skipped) jq_filter="$jq_filter | .end_at = \$timestamp" ;;
+	esac
+
+	tmpfile=$(mktemp)
+	if ! jq \
+		--arg status "$status" \
+		--argjson evidence "$evidence" \
+		--argjson logs "$log_array" \
+		--arg timestamp "$timestamp" \
+		"$jq_filter" "$output_file" > "$tmpfile"; then
+		echo "Error: Failed to update JSON (is evidence valid JSON?)" >&2
+		rm -f "$tmpfile"
+		return 1
+	fi
+	mv "$tmpfile" "$output_file"
+}
+
+# notify_results: group every result of NP_OUTPUT_DIR by category and record
+# them on the action (np service action patch). The payload travels through
+# files, never through argv.
+notify_results() {
+	local json_files work_dir results_file body_file action_id service_id rc=0
+
+	json_files=$(find "${NP_OUTPUT_DIR:-/nonexistent}" -type f -name "*.json" ! -path "*/data/*" 2>/dev/null)
+	if [ -z "$json_files" ]; then
+		print_warning "No JSON result files found in ${NP_OUTPUT_DIR:-(unset)}"
+		return 1
+	fi
+
+	work_dir=$(mktemp -d)
+	results_file="$work_dir/results.json"
+	body_file="$work_dir/body.json"
+
+	if ! echo "$json_files" | xargs jq -s '
+		def cat: .category // "unknown";
+		sort_by(cat)
+		| group_by(cat)
+		| map({
+			category: (.[0].category // "unknown"),
+			summary: {
+				pending: (map(select((.status // "UNKNOWN") == "pending")) | length),
+				running: (map(select((.status // "UNKNOWN") == "running")) | length),
+				success: (map(select((.status // "UNKNOWN") == "success")) | length),
+				failed:  (map(select((.status // "UNKNOWN") == "failed"))  | length),
+				warning: (map(select((.status // "UNKNOWN") == "warning")) | length),
+				skipped: (map(select((.status // "UNKNOWN") == "skipped")) | length)
+			},
+			checks: .
+		})' > "$results_file"; then
+		print_error "Failed to group the check results of $NP_OUTPUT_DIR"
+		rm -rf "$work_dir"
+		return 1
+	fi
+
+	action_id=$(echo "${NP_ACTION_CONTEXT:-}" | jq -r '.notification.id // empty' 2>/dev/null)
+	service_id=$(echo "${NP_ACTION_CONTEXT:-}" | jq -r '.notification.service.id // empty' 2>/dev/null)
+	if [ -z "$action_id" ] || [ -z "$service_id" ]; then
+		print_warning "No action id or service id in NP_ACTION_CONTEXT; the results stay in $NP_OUTPUT_DIR"
+		rm -rf "$work_dir"
+		return 1
+	fi
+
+	if ! jq -nc --slurpfile result "$results_file" '{results: {categories: $result[0]}}' > "$body_file"; then
+		print_error "Failed to build the action body"
+		rm -rf "$work_dir"
+		return 1
+	fi
+
+	# np reads --body from disk only when the value ends in .json.
+	np service action patch --id "$action_id" --serviceId "$service_id" --body "$body_file" --no-output || rc=$?
+	rm -rf "$work_dir"
+	return "$rc"
+}
