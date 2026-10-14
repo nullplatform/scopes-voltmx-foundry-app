@@ -1,0 +1,49 @@
+#!/bin/bash
+# Answers instance:data with instance/workflows/list.yaml. stdout is the JSON answer only.
+set -euo pipefail
+
+# The root entrypoint routes here on .action alone (NOTIFICATION_ACTION), like
+# log:read and metric:*. Refuse anything that is not a pure telemetry request:
+# a service action (it has a slug) or a deployment must never be answered by
+# this read-only workflow, whatever its .action says.
+if [ "${NOTIFICATION_ACTION:-}" != "instance:data" ]; then
+  echo "❌ service/instance/entrypoint only answers instance:data, got '${NOTIFICATION_ACTION:-}'" >&2
+  exit 1
+fi
+slug=$(echo "$CONTEXT" | jq -r '.slug // empty')
+deployment_id=$(echo "$CONTEXT" | jq -r '.parameters.deployment_id // empty')
+if [ -n "$slug" ] || [ -n "$deployment_id" ]; then
+  {
+    echo "❌ instance:data must be a telemetry request, got slug='$slug' deployment='$deployment_id'"
+    echo "💡 Possible causes:"
+    echo "   • A service action notification carries action instance:data"
+    echo "🔧 How to fix:"
+    echo "   • Check the notification channel: instance:data requests carry no slug and no deployment_id"
+  } >&2
+  exit 1
+fi
+
+# The scope is the one the request asks about: .arguments.scope_id (sometimes a
+# one-element array), never a tag or parameter. build-context reads it from
+# .notification.parameters.scope_id, so it is copied there.
+scope_id=$(echo "$CONTEXT" | jq -r '.arguments.scope_id | if type == "array" then .[0] else . end | values | tostring')
+if ! [[ "$scope_id" =~ ^[0-9]+$ ]]; then
+  echo "instance:data without a scope id; answering no instances" >&2
+  echo '{"results":[]}'
+  exit 0
+fi
+
+NP_ACTION_CONTEXT=$(echo "$NP_ACTION_CONTEXT" | jq -c --arg scope_id "$scope_id" '.notification.parameters.scope_id = $scope_id')
+SCOPE_ID="$scope_id"
+export NP_ACTION_CONTEXT SCOPE_ID
+
+# shellcheck source=service/workflow
+source "$WORKING_DIRECTORY/service/workflow"
+workflow_overrides instance list
+# Listing releases needs no parameters; older CLIs do not know --no-params.
+no_params=()
+if np service workflow exec --help 2>&1 | grep -q -- "--no-params"; then
+  no_params=(--no-params)
+fi
+np service workflow exec --no-output --build-context ${no_params[@]+"${no_params[@]}"} \
+  --workflow "$SERVICE_PATH/instance/workflows/list.yaml" ${WORKFLOW_OVERRIDES[@]+"${WORKFLOW_OVERRIDES[@]}"}

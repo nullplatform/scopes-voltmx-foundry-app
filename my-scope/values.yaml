@@ -1,4 +1,0 @@
-# Operator configuration for every workflow (not shown to developers); each key under
-# configuration becomes an environment variable in the steps.
-# provider_categories: [cloud-providers]   # the providers --build-context loads into CONTEXT
-configuration: {}

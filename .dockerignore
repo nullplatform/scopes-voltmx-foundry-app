@@ -6,3 +6,6 @@ Dockerfile
 **/.terraform
 **/*.tfstate*
 mise.toml
+**/tests
+testing
+docs
