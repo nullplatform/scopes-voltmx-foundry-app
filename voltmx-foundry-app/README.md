@@ -11,6 +11,10 @@ environment with the Foundry CLI (`mfcli`).
 | DevOps | scope configuration `Volt MX Foundry app` (`specs/scope-configuration.json.tpl`, per account, namespace or dimension) | `environment_name`, `auth` (cloud `account_id` or on-premises `identity_url` + `console_url`), `credentials_secret` (`{"username","password"}`), `allowed_apps`, `app_name_prefix`, `secrets_prefix`, `assets.bucket`, `assets.region` |
 | Operator | `values.yaml` | `MFCLI_CMD`, `PUBLISH_TIMEOUT_SECONDS`, `PUBLISH_POLL_SECONDS`, `MFCLI_CALL_TIMEOUT_SECONDS`, `WORKDIR` |
 
+The scope configuration also takes an optional `mfcli.command` ("Foundry CLI (testing)") that replaces `MFCLI_CMD` for
+its scopes: it is how the POC points the scopes at the mock shipped in the worker image
+(`/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli`). Leave it empty with a real Foundry.
+
 The CI exports the app from Foundry, uploads the zip to the assets bucket and registers it as an asset named
 `foundry` (type `bundle`) of the build. The release semver is the Foundry app version.
 
@@ -51,7 +55,7 @@ Foundry console can still change any app.
 Foundry keeps a single active version per app and environment: `Publish` replaces it, there is no way to serve two
 versions side by side and move traffic between them. The scope therefore offers `start-initial`,
 `rollback-deployment` (publishes the release of the previous finalized deployment again) and `delete-deployment`,
-plus `create-scope`, `update-scope` and `delete-scope`. There is no `start-blue-green`, `switch-traffic` or
+plus `create-scope`, `update-scope`, `delete-scope` and `diagnose-scope`. There is no `start-blue-green`, `switch-traffic` or
 `finalize-blue-green`.
 
 ## Deployment scripts (`deployment/scripts/`)
@@ -74,12 +78,21 @@ The engine sources every step of a workflow in one `bash -c`, joined by `&&`. `b
 when it is sourced, so its `exit`, traps and shell options never end or alter the chain
 (`deployment/tests/scripts/workflow_chain_test.bats` runs the chains that way).
 
+Every workflow starts with `utils/assume_role_step` (the IAM role of `specs/requirements/aws`, published in the
+`identity-access-control` provider with the selector `voltmx-foundry-app`; without one the agent credentials are used).
+
 | Workflow | Steps | Step configuration |
 |---|---|---|
 | start-initial | `build_context`, `fetch_asset`, `read_credentials`, `render_profile`, `do_import`, `do_reconfig`, `do_publish`, `wait_publish`, `export_outputs` | |
 | rollback-deployment | `build_context`, `read_credentials`, `do_rollback` | `BUILD_CONTEXT_MODE: rollback` |
 | delete-deployment | `build_context`, `read_credentials`, `do_unpublish` | `BUILD_CONTEXT_MODE: rollback`, `UNPUBLISH_MODE: deployment` |
+| create-scope, update-scope | `build_context`, `read_credentials` (the configuration resolves, the app is allowed, the secret exists and has the right shape; nothing is called in Foundry) | `BUILD_CONTEXT_MODE: scope` |
 | delete-scope | `build_context`, `read_credentials`, `do_unpublish` | `BUILD_CONTEXT_MODE: scope`, `UNPUBLISH_MODE: scope` |
+| diagnose-scope | `build_context`, then the executor runs `diagnose/checks/{console_reachable,credentials_valid,app_published}` and reports each result to the action (`diagnose/utils/diagnose_utils`) | `BUILD_CONTEXT_MODE: scope` |
+| instance:data | `reserve_stdout`, `build_context`, `read_credentials`, `instance/scripts/list` (`publish-status` as `{"results": [...]}` on stdout) | `BUILD_CONTEXT_MODE: scope` |
+
+The diagnose checks are sourced by the executor in the workflow shell, so they `return` and never `exit`; the
+credentials check reads the secret itself so a missing or rotated password is a reported finding, not a dead workflow.
 
 `BUILD_CONTEXT_MODE` is `deployment` (default: asset, profile variables and previous deployment), `rollback` (no
 asset or profile variables) or `scope` (no deployment, release or asset; the app binding, auth, environment and
@@ -115,12 +128,16 @@ Each deployment becomes the version every client gets. A "publish without making
 ## Tests
 
 ```bash
-bats -r voltmx-foundry-app/          # or ./testing/run_bats_tests.sh voltmx-foundry-app
-shellcheck -S warning voltmx-foundry-app/deployment/scripts/*
+make lint                                    # shellcheck of every script
+make test-unit MODULE=voltmx-foundry-app     # deployment, instance, diagnose and utils tests
+bats -r voltmx-foundry-app/                  # the same plus tools/mfcli-mock/tests (the runner only looks two levels deep)
+make test-tofu MODULE=voltmx-foundry-app     # specs/requirements/aws
 ```
 
 The deployment tests run against the mfcli mock (`tools/mfcli-mock/mfcli`, `MFCLI_MOCK_BIN` overrides it) with its state
-in the test tmpdir. The spec tests need `gomplate`.
+in the test tmpdir. `deployment/tests/workflows/` checks the workflows statically (every step file exists, every consumed
+variable is declared by an earlier step) and runs `initial` and `rollback` through the real `np` engine when it is
+installed. The spec tests need `gomplate`; the workflow checks need `python3` with PyYAML.
 
 ## Checklist for D1 (real mfcli.jar)
 
