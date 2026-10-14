@@ -1,0 +1,19 @@
+{
+  "results": [
+    {
+      "id": "spec-static",
+      "slug": "static-files",
+      "name": "Static Files"
+    },
+    {
+      "id": "spec-mobile",
+      "slug": "mobile-store",
+      "name": "Mobile store"
+    },
+    {
+      "id": "spec-foundry",
+      "slug": "volt-mx-foundry-app",
+      "name": "Volt MX Foundry app"
+    }
+  ]
+}

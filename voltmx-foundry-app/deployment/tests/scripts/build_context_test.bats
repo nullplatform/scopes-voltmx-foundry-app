@@ -927,3 +927,23 @@ scope_context() {
 	[[ "${output%%:*}" == *u* ]]
 	[[ ":${output#*:}:" == *:pipefail:* ]]
 }
+
+@test "Should resolve the scope configuration when the platform derived the slug volt-mx-foundry-app from the name" {
+	export NP_MOCK_SPECIFICATION_LIST="$MOCKS_DIR/scope_configuration/specification_list_platform_slug.json"
+
+	run source "$SCRIPT"
+
+	assert_equal "$status" "0"
+	assert_line "   📋 Scope configuration: resolved from the platform (nrn organization=1:account=2:namespace=3:application=442353700)"
+}
+
+@test "Should ignore a specification whose slug is outside SCOPE_CONFIGURATION_SLUGS" {
+	export NP_MOCK_SPECIFICATION_LIST="$MOCKS_DIR/scope_configuration/specification_list_platform_slug.json"
+	export SCOPE_CONFIGURATION_SLUGS="voltmx-foundry-app"
+
+	run source "$SCRIPT"
+
+	assert_equal "$status" "0"
+	assert_line "   ⚠️ Could not resolve the Volt MX Foundry app scope configuration from the platform; trusting the context, which may belong to another scope type"
+	refute_np_called "np provider list"
+}

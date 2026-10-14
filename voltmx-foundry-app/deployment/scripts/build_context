@@ -202,7 +202,12 @@ resolve_scope_configuration() {
 	[ -n "$nrn" ] || return 2
 
 	specifications=$(np provider specification list --nrn "$nrn" --format json 2>/dev/null) || return 2
-	spec_id=$(echo "$specifications" | jq -r '[.results[]? | select(.slug == "voltmx-foundry-app")] | first | .id // empty' 2>/dev/null) || return 2
+	# The platform derives the specification slug from the template's name
+	# ("Volt MX Foundry app" becomes volt-mx-foundry-app), so accept every slug
+	# in SCOPE_CONFIGURATION_SLUGS (values.yaml; space separated).
+	spec_id=$(echo "$specifications" | jq -r --arg slugs "${SCOPE_CONFIGURATION_SLUGS:-voltmx-foundry-app volt-mx-foundry-app}" \
+		'($slugs | split(" ") | map(select(length > 0))) as $accepted
+		 | [.results[]? | select(.slug as $s | $accepted | index($s))] | first | .id // empty' 2>/dev/null) || return 2
 	[ -n "$spec_id" ] || return 2
 
 	dims=$(ctx '.scope.dimensions // {} | to_entries | map("\(.key):\(.value)") | join(",")')
