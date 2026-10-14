@@ -23,7 +23,7 @@ for arg in "$@"; do
   esac
 done
 if [ -z "$SERVICE_PATH" ]; then
-  echo "--service-path is required (the scope directory, e.g. /app/pkg/my-scope)" >&2
+  echo "--service-path is required (the scope directory, e.g. /app/pkg/voltmx-foundry-app)" >&2
   exit 1
 fi
 

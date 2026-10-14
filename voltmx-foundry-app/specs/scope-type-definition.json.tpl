@@ -1,5 +1,5 @@
 {
-  "name": "My Scope",
+  "name": "VoltMX Foundry app",
   "description": "Replace with what this scope deploys",
   "nrn": "{{ env.Getenv "NRN" }}",
   "provider_id": "{{ env.Getenv "SERVICE_SPECIFICATION_ID" }}",

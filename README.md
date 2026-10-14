@@ -1,15 +1,10 @@
-# my-scope
+# scopes-voltmx-foundry-app
 
 Template for new nullplatform `scopes-*` repositories: the CI every scope repo needs and the minimal structure the agent runs. Everything specific to your scope is yours to add.
 
 ## Start here
 
-1. Replace `my-scope` everywhere with your scope slug (directory, `Dockerfile`, `mise.toml`, specs, `.github/workflows/*`):
-   ```bash
-   git mv my-scope <slug>
-   grep -rl my-scope . --exclude-dir=.git | xargs perl -pi -e 's/my-scope/<slug>/g'
-   ```
-   Then set the display name (`"My Scope"`) in `<slug>/specs/service-spec.json.tpl`, `scope-type-definition.json.tpl` and `notification-channel.json.tpl`.
+1. Done: the module is `voltmx-foundry-app/` and the display name is "VoltMX Foundry app".
 2. Add the **Public ECR** service to the application in nullplatform. It creates the ECR Public repository and the publisher role; then set the secret and variable in [Publishing](#publishing).
 3. Write your steps in `<slug>/scripts/` and wire them in `<slug>/<entity>/workflows/*.yaml`; define the capabilities developers choose in `<slug>/specs/service-spec.json.tpl` and operator settings in `<slug>/values.yaml`.
 4. Merge to `main` with a `feat:` or `fix:` commit: release-please opens the release PR, and merging it publishes the image.
@@ -19,7 +14,7 @@ Template for new nullplatform `scopes-*` repositories: the CI every scope repo n
 ```
 entrypoint              agent calls it; routes deployment actions to service/deployment, the rest to service/scope
 service/                scope and deployment handlers (map an action to its workflow) and the shared runner
-my-scope/
+voltmx-foundry-app/
   scope/workflows/      create, update, delete
   deployment/workflows/ initial, blue_green, switch_traffic, finalize, rollback, delete
   scripts/              the steps the workflows run (example is a placeholder)
@@ -54,7 +49,7 @@ no publish. The two tasks in `mise.toml` are the whole contract with the CLI:
 
 | Command | Runs | Does |
 |---|---|---|
-| `np package build --image` | `mise run build:image` | Builds `my-scope-worker:dev` |
+| `np package build --image` | `mise run build:image` | Builds `voltmx-foundry-app-worker:dev` |
 | `np package run` | `mise run run` | Builds the image, then starts the local agent |
 
 Prerequisites: **Docker** with host networking (Linux as is; on Docker Desktop
@@ -73,7 +68,7 @@ eval "$(aws configure export-credentials --format env)"   # cloud credentials as
 np package run --log-level DEBUG                          # Ctrl+C to stop
 ```
 
-The agent is tagged `package:my-scope` and `local:<your user>`. It receives an
+The agent is tagged `package:voltmx-foundry-app` and `local:<your user>`. It receives an
 action only when the scope's notification channel selects those tags, so
 point a channel at `local:<your user>` to route work to your machine.
 
@@ -91,7 +86,7 @@ pass `--no-forward-env` to forward nothing.
 |---|---|---|
 | `NP_API_KEY` | required | The key the agent registers with (`--api-key` also sets it) |
 | `NP_LOG_LEVEL` | `INFO` | Agent log level (`--log-level` also sets it) |
-| `NP_PACKAGE_SLUG` | `my-scope` | The slug in the `package:<slug>` tag, when published under another slug |
+| `NP_PACKAGE_SLUG` | `voltmx-foundry-app` | The slug in the `package:<slug>` tag, when published under another slug |
 | `NP_LOCAL_USER` | `$USER` | The value of the `local:<user>` tag |
 | `NP_AGENT_IMAGE` | `controlplane-agent:latest` | The agent image; needs worker rules (0.11.1+) |
 
