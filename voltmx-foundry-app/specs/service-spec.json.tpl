@@ -1,5 +1,5 @@
 {
-  "name": "My Scope",
+  "name": "VoltMX Foundry app",
   "type": "scope",
   "assignable_to": "any",
   "use_default_actions": false,
@@ -21,7 +21,7 @@
     "category": "Scope",
     "imported": false,
     "provider": "Agent",
-    "sub_category": "My Scope"
+    "sub_category": "VoltMX Foundry app"
   },
   "dimensions": {},
   "scopes": {},
