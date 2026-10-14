@@ -205,3 +205,15 @@ assert_ui_scopes_resolve() {
 	run grep -E '^  MFCLI_CALL_TIMEOUT_SECONDS:' "$values"
 	assert_contains "$output" "  MFCLI_CALL_TIMEOUT_SECONDS: 300"
 }
+
+@test "Spec descriptions fit the platform limits" {
+	# The scope type API rejects descriptions over 60 characters and the provider
+	# specification API answers 500 to long ones (seen with 285 and 350 characters).
+	local spec
+	spec=$(gomplate -f "$SPECS_DIR/scope-type-definition.json.tpl")
+	assert_less_than "$(echo "$spec" | jq -r '.description // "" | length')" "61" "description of scope-type-definition.json.tpl"
+	for tpl in "$SPECS_DIR/scope-configuration.json.tpl" "$SPECS_DIR/service-spec.json.tpl"; do
+		spec=$(gomplate -f "$tpl")
+		assert_less_than "$(echo "$spec" | jq -r '.description // "" | length')" "116" "description of $(basename "$tpl")"
+	done
+}

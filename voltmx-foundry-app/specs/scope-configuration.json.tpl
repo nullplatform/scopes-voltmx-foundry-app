@@ -1,6 +1,6 @@
 {
   "name": "Volt MX Foundry app",
-  "description": "Configuration for Volt MX Foundry app scopes: the Foundry environment the apps of a namespace or dimension are published to, how the agent reaches Foundry (cloud account or on-premises URLs), which Foundry apps and which technical user its scopes may use (environments are shared by many teams), and the bucket where the CI uploads the exported apps.",
+  "description": "Foundry environment, access, allowed apps, technical user and assets bucket of the Volt MX Foundry app scopes",
   "category": "scope-configurations",
   "icon": "mdi:server-network",
   "visible_to": [
