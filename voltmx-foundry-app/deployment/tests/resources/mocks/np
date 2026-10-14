@@ -12,6 +12,8 @@
 #   NP_MOCK_ASSET_LIST                    np asset list
 #   NP_MOCK_DEPLOYMENT_LIST               np deployment list
 #   NP_MOCK_RELEASE_READ                  np release read
+#   NP_MOCK_RELEASE_READ_DIR              np release read --id <id>: <dir>/<id>.json when it
+#                                         exists (falls back to NP_MOCK_RELEASE_READ)
 #   NP_MOCK_RELEASE_LIST                  np release list
 #   NP_MOCK_DEPLOYMENT_PATCH              np deployment patch
 #   NP_MOCK_ACTION_PATCH                  np service action patch (diagnose results)
@@ -73,7 +75,18 @@ case "$*" in
     ;;
   *"deployment patch"*) answer "${NP_MOCK_DEPLOYMENT_PATCH:-}" ;;
   *"service action patch"*) answer "${NP_MOCK_ACTION_PATCH:-}" ;;
-  *"release read"*) answer "${NP_MOCK_RELEASE_READ:-}" ;;
+  *"release read"*)
+    release_id=""
+    previous=""
+    for arg in "$@"; do
+      [ "$previous" = "--id" ] && release_id="$arg"
+      previous="$arg"
+    done
+    if [ -n "${NP_MOCK_RELEASE_READ_DIR:-}" ] && [ -n "$release_id" ] && [ -f "$NP_MOCK_RELEASE_READ_DIR/$release_id.json" ]; then
+      answer "$NP_MOCK_RELEASE_READ_DIR/$release_id.json"
+    fi
+    answer "${NP_MOCK_RELEASE_READ:-}"
+    ;;
   *"release list"*) answer "${NP_MOCK_RELEASE_LIST:-}" ;;
   *)
     echo "{\"error\": \"unexpected command: np $*\"}"

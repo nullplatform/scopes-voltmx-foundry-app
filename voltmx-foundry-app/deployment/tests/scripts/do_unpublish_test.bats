@@ -91,7 +91,7 @@ setup() {
 @test "Should fail closed on scope deletion when a release of the scope cannot be read" {
 	seed_active_version "0.9.0"
 	export UNPUBLISH_MODE="scope"
-	unset NP_MOCK_RELEASE_READ
+	unset NP_MOCK_RELEASE_READ NP_MOCK_RELEASE_READ_DIR
 
 	run bash "$SCRIPT"
 
@@ -123,15 +123,46 @@ setup() {
 	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
 }
 
-@test "scope mode: should fail closed when publish-status fails, without relying on its error text" {
+@test "scope mode: should succeed with nothing to unpublish when Foundry says the app is not published" {
 	export UNPUBLISH_MODE="scope"
 
 	run bash "$SCRIPT"
 
-	assert_equal "$status" "1"
-	assert_line "   ❌ mfcli publish-status failed (exit 1): Error: App 'PetStore' is not published to environment 'uat'."
+	assert_equal "$status" "0"
+	assert_line "   📋 PetStore is not published in environment uat (Error: App 'PetStore' is not published to environment 'uat'.); nothing to unpublish"
 	refute_line "✅ PetStore is no longer published in environment uat"
 	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
+}
+
+@test "scope mode: should unpublish a version released by any finalized deployment of the scope, not only the first" {
+	export UNPUBLISH_MODE="scope"
+	local version
+	for version in 1.1.0 0.5.0; do
+		seed_active_version "$version"
+		rm -f "$NP_MOCK_CALLS_LOG"
+
+		run bash "$SCRIPT"
+
+		assert_equal "$status" "0"
+		assert_line "   📋 Active version $version was released by a finalized deployment of scope 7"
+		assert_line "✅ PetStore is no longer published in environment uat"
+		assert_np_called "np release read --id 65 --format json"
+		assert_np_called "np release read --id 60 --format json"
+		assert_np_called "np release read --id 50 --format json"
+	done
+}
+
+@test "scope mode: should leave a version published when no release of the scope carries it, even with three finalized deployments" {
+	seed_active_version "1.0.0"
+	export UNPUBLISH_MODE="scope"
+
+	run bash "$SCRIPT"
+
+	assert_equal "$status" "0"
+	assert_line "   ⚠️ Version 1.0.0 of PetStore is active in environment uat, but no finalized deployment of scope 7 released it; leaving it published (it may belong to another scope)"
+	assert_np_called "np release read --id 65 --format json"
+	assert_np_called "np release read --id 50 --format json"
+	assert_equal "$(mock_publish_status | jq -r .active_version)" "1.0.0"
 }
 
 @test "deployment mode: should warn and not unpublish when publish-status does not answer" {

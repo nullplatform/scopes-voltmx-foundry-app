@@ -161,6 +161,27 @@ WRAPPER
 	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
 }
 
+@test "delete-deployment then delete-scope: the scope can be deleted after its deployment unpublished the active version" {
+	seed_as "1.0.0"
+	local deployment_context="$CONTEXT"
+	CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.asset) | .deployment.status = "deleting"')
+	export CONTEXT BUILD_CONTEXT_MODE="rollback" UNPUBLISH_MODE="deployment"
+
+	run_chain build_context read_credentials do_unpublish
+	assert_equal "$status" "0"
+	assert_line "✅ PetStore is no longer published in environment uat"
+
+	CONTEXT=$(echo "$deployment_context" | jq -c 'del(.deployment, .release, .asset)')
+	export CONTEXT BUILD_CONTEXT_MODE="scope" UNPUBLISH_MODE="scope"
+	: > "$MFCLI_MOCK_LOG"
+
+	run_chain build_context read_credentials do_unpublish
+	assert_equal "$status" "0"
+	assert_line "CHAIN-COMPLETED"
+	assert_line "   📋 PetStore is not published in environment uat (Error: App 'PetStore' is not published to environment 'uat'.); nothing to unpublish"
+	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
+}
+
 @test "engine configuration: prefix assignments on source (no export) reach the steps that re-run in a child shell" {
 	seed_as "0.9.0"
 	CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.deployment, .release, .asset)')

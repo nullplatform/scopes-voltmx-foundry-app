@@ -16,15 +16,18 @@
 # the scope's own deployment history. When that history cannot be read the
 # step fails closed.
 #
-# The step does not depend on mfcli error texts: a scope without finalized
-# deployments has nothing of its own in Foundry (no call is made); otherwise
-# publish-status must answer JSON, and an app without active_version has
-# nothing to unpublish. When publish-status fails or does not answer JSON:
+# A scope without finalized deployments has nothing of its own in Foundry (no
+# call is made); otherwise publish-status must answer JSON, and an app without
+# active_version has nothing to unpublish. A publish-status that fails saying
+# the app is not published (not published / not found / does not exist, the
+# text instance/scripts/list and diagnose/checks/app_published also read) means
+# the same: nothing to unpublish, the step succeeds (D1: the exit code and text
+# of publish-status for an app that is not published). When publish-status
+# fails for any other reason or does not answer JSON:
 #   deployment  warn and leave the app as it is (exit 0): deleting a
 #               deployment must never be blocked, and not unpublishing is the
 #               safe side.
-#   scope       fail closed (D1: the exit code and text of publish-status for
-#               an app that is not published).
+#   scope       fail closed.
 # A failed Unpublish always fails the step.
 # =============================================================================
 
@@ -114,6 +117,13 @@ fi
 if [ "$status_read" != "ok" ] && [ "$UNPUBLISH_MODE" = "deployment" ]; then
 	echo "   ⚠️ Could not read the publish status of $FOUNDRY_APP in environment $ENVIRONMENT_NAME; leaving the app as it is"
 	echo "   📋 publish-status: ${status_problem:-no error message}"
+	exit 0
+fi
+# An app Foundry says is not published (a delete-deployment unpublished the
+# active version, or it was never published) has nothing to unpublish: the
+# same answer instance/scripts/list and diagnose/checks/app_published read.
+if [ "$status_read" = "failed" ] && printf '%s' "${status_problem:-}" | grep -qiE "not published|not found|does not exist"; then
+	echo "   📋 $FOUNDRY_APP is not published in environment $ENVIRONMENT_NAME ($status_problem); nothing to unpublish"
 	exit 0
 fi
 if [ "$status_read" = "failed" ]; then

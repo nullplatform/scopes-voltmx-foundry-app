@@ -137,6 +137,8 @@ setup_foundry_test() {
 	export NP_MOCK_DEPLOYMENT_PATCH="$MOCKS_DIR/deployment_patch.json"
 	export NP_MOCK_DEPLOYMENT_LIST="$MOCKS_DIR/deployment_list.json"
 	export NP_MOCK_RELEASE_READ="$MOCKS_DIR/release_read.json"
+	# One release per id (finalized deployments 73/70/61 -> releases 65/60/50 -> 1.1.0/0.9.0/0.5.0).
+	export NP_MOCK_RELEASE_READ_DIR="$MOCKS_DIR/releases"
 	export AWS_MOCK_CALLS_LOG="$BATS_TEST_TMPDIR/aws_calls.log"
 	export AWS_MOCK_SECRETS_DIR="$BATS_TEST_TMPDIR/secrets"
 	mkdir -p "$AWS_MOCK_SECRETS_DIR"
