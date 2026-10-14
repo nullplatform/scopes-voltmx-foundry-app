@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.1...v0.1.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* **voltmx-foundry-app:** accept the platform-derived scope configuration slug ([0ae03b7](https://github.com/nullplatform/scopes-voltmx-foundry-app/commit/0ae03b731a720c2477d92478fb9653da86d336df))
+
 ## [0.1.1](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.0...v0.1.1) (2026-10-14)
 
 
