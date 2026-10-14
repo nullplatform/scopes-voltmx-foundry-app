@@ -1,0 +1,12 @@
+# Operator configuration for every workflow (not shown to developers); each key under
+# configuration becomes an environment variable in the steps.
+provider_categories:
+  - scope-configurations
+  - cloud-providers
+  - identity-access-control
+configuration:
+  MFCLI_CMD: "java -jar /opt/mfcli/mfcli.jar"   # the Foundry CLI; tests point it at tools/mfcli-mock/mfcli
+  PUBLISH_TIMEOUT_SECONDS: 900                  # give up waiting for publish-status after this
+  PUBLISH_POLL_SECONDS: 15                      # how often publish-status is polled
+  MFCLI_CALL_TIMEOUT_SECONDS: 300               # upper bound for a single mfcli call (a hung CLI is stopped)
+  WORKDIR: /tmp/voltmx-foundry-app              # scratch directory (one subdirectory per deployment)

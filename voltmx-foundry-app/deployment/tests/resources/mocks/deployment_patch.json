@@ -1,0 +1,9 @@
+{
+  "id": 77,
+  "scope_id": 7,
+  "release_id": 9,
+  "status": "creating",
+  "messages": [
+    { "level": "INFO", "code": "VOLTMX_FOUNDRY_APP", "message": "recorded", "timestamp": 1766427000 }
+  ]
+}

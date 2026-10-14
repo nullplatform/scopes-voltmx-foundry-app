@@ -1,0 +1,154 @@
+#!/bin/bash
+# =============================================================================
+# Unpublish the app from the environment
+#
+#   mfcli Unpublish -e $ENVIRONMENT_NAME -a $FOUNDRY_APP
+#
+# UNPUBLISH_MODE (step configuration, required; never inferred):
+#   deployment  delete-deployment: the app is only unpublished when
+#               APP_VERSION (the version of the deployment) is the active one:
+#               deleting an old or failed deployment must not take down the
+#               version that serves.
+#   scope       delete-scope: the app is only unpublished when its active version was released by a
+# finalized deployment of THIS scope (np deployment list + np release read):
+# Foundry environments are shared, and Foundry has no tag or attribute where
+# the scope could record that it owns the app, so ownership is inferred from
+# the scope's own deployment history. When that history cannot be read the
+# step fails closed.
+#
+# The step does not depend on mfcli error texts: a scope without finalized
+# deployments has nothing of its own in Foundry (no call is made); otherwise
+# publish-status must answer JSON, and an app without active_version has
+# nothing to unpublish. When publish-status fails or does not answer JSON:
+#   deployment  warn and leave the app as it is (exit 0): deleting a
+#               deployment must never be blocked, and not unpublishing is the
+#               safe side.
+#   scope       fail closed (D1: the exit code and text of publish-status for
+#               an app that is not published).
+# A failed Unpublish always fails the step.
+# =============================================================================
+
+# The engine sources every step in one bash -c joined by &&: run this step in
+# a child shell so its exit codes, traps and shell options stay inside it.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
+set -euo pipefail
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mfcli_run"
+
+# Prints the semvers released by the finalized deployments of SCOPE_ID, one
+# per line. Returns 1 when the deployments cannot be listed.
+scope_released_versions() {
+	local deployments release_id semver
+	[[ "${SCOPE_ID:-}" =~ ^[0-9]+$ ]] || return 1
+	deployments=$(np deployment list --scope-id "$SCOPE_ID" --all --max-pages 5 --format json 2>/dev/null) || return 1
+	deployments=$(echo "$deployments" | jq -r '
+		(if type == "array" then . elif type == "object" and has("results") then .results else error("unexpected deployment listing") end)
+		| map(select(.status == "finalized") | .release_id | tostring) | unique[]' 2>/dev/null) || return 1
+	for release_id in $deployments; do
+		[[ "$release_id" =~ ^[0-9]+$ ]] || continue
+		semver=$(np release read --id "$release_id" --format json 2>/dev/null | jq -r '.semver // empty' 2>/dev/null) || return 1
+		[ -n "$semver" ] || return 1
+		printf '%s\n' "$semver"
+	done
+}
+
+UNPUBLISH_MODE="${UNPUBLISH_MODE:-}"
+case "$UNPUBLISH_MODE" in
+	deployment)
+		if ! [[ "${APP_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+			{
+				echo "   ❌ UNPUBLISH_MODE=deployment needs the version of the deployment (APP_VERSION is '${APP_VERSION:-}')"
+				echo "  🔧 How to fix:"
+				echo "    • Run build_context with BUILD_CONTEXT_MODE=rollback before this step in the delete-deployment workflow"
+			} >&2
+			exit 1
+		fi
+		;;
+	scope) ;;
+	*)
+		{
+			echo "   ❌ UNPUBLISH_MODE must be scope or deployment, got '$UNPUBLISH_MODE'"
+			echo "  💡 Possible causes:"
+			echo "    • The workflow step that runs do_unpublish does not set configuration.UNPUBLISH_MODE"
+			echo "  🔧 How to fix:"
+			echo "    • Set UNPUBLISH_MODE: scope in the delete-scope workflow and UNPUBLISH_MODE: deployment in the delete-deployment workflow"
+		} >&2
+		exit 1
+		;;
+esac
+
+echo "📝 Unpublishing $FOUNDRY_APP from environment $ENVIRONMENT_NAME ($UNPUBLISH_MODE mode)..."
+
+if [ "$UNPUBLISH_MODE" = "scope" ]; then
+	if ! released=$(scope_released_versions); then
+		{
+			echo "   ❌ Could not list the deployments of scope ${SCOPE_ID:-(unknown)} to check which versions it released; not unpublishing"
+			echo "  💡 Possible causes:"
+			echo "    • The np CLI failed or the agent cannot read the deployments of the scope"
+			echo "  🔧 How to fix:"
+			echo "    • Retry the scope deletion; if it keeps failing, unpublish $FOUNDRY_APP from environment $ENVIRONMENT_NAME in the Foundry console after checking it is not used by another scope"
+		} >&2
+		exit 1
+	fi
+	if [ -z "$released" ]; then
+		echo "   📋 Scope $SCOPE_ID has no finalized deployments: nothing it published can be active; nothing to unpublish"
+		exit 0
+	fi
+fi
+
+status_read="ok"
+if ! MFCLI_RUN_QUIET=1 mfcli_run publish-status -e "$ENVIRONMENT_NAME" -a "$FOUNDRY_APP"; then
+	status_read="failed"
+	status_problem=$(printf '%s\n' "$MFCLI_ERROR" | sed '/^[[:space:]]*$/d' | head -n 1)
+	[ "${MFCLI_LAST_STATUS:-1}" = "124" ] && status_problem="no answer in ${MFCLI_LAST_TIMEOUT:-300}s"
+elif ! printf '%s' "$MFCLI_OUTPUT" | jq -e 'type == "object" and (.status | type == "string")' >/dev/null 2>&1; then
+	status_read="invalid"
+	status_problem="the answer is not the expected JSON"
+fi
+
+if [ "$status_read" != "ok" ] && [ "$UNPUBLISH_MODE" = "deployment" ]; then
+	echo "   ⚠️ Could not read the publish status of $FOUNDRY_APP in environment $ENVIRONMENT_NAME; leaving the app as it is"
+	echo "   📋 publish-status: ${status_problem:-no error message}"
+	exit 0
+fi
+if [ "$status_read" = "failed" ]; then
+	mfcli_explain_error
+	exit 1
+fi
+if [ "$status_read" = "invalid" ]; then
+	{
+		echo "   ❌ publish-status of $FOUNDRY_APP did not return the expected JSON ({\"status\", \"version\", \"active_version\"}); not unpublishing"
+		echo "  💡 Possible causes:"
+		echo "    • The installed mfcli prints publish-status in another format than the one this scope expects"
+		echo "  🔧 How to fix:"
+		echo "    • Check $FOUNDRY_APP in the Foundry console (environment $ENVIRONMENT_NAME) and adapt do_unpublish to this mfcli version"
+	} >&2
+	exit 1
+fi
+active=$(printf '%s' "$MFCLI_OUTPUT" | jq -r '.active_version // empty')
+if [ -z "$active" ]; then
+	echo "   📋 $FOUNDRY_APP has no active version in environment $ENVIRONMENT_NAME; nothing to unpublish"
+	exit 0
+fi
+
+if [ "$UNPUBLISH_MODE" = "deployment" ]; then
+	if [ "$active" != "$APP_VERSION" ]; then
+		echo "   📋 Version $APP_VERSION is not the active version of $FOUNDRY_APP in environment $ENVIRONMENT_NAME (active: $active); leaving it published"
+		exit 0
+	fi
+else
+	if ! printf '%s\n' "$released" | grep -qxF -- "$active"; then
+		echo "   ⚠️ Version $active of $FOUNDRY_APP is active in environment $ENVIRONMENT_NAME, but no finalized deployment of scope $SCOPE_ID released it; leaving it published (it may belong to another scope)"
+		exit 0
+	fi
+	echo "   📋 Active version $active was released by a finalized deployment of scope $SCOPE_ID"
+fi
+
+mfcli_run Unpublish -e "$ENVIRONMENT_NAME" -a "$FOUNDRY_APP" || exit 1
+[ -z "$MFCLI_OUTPUT" ] || printf '   📋 %s\n' "$MFCLI_OUTPUT"
+echo "✅ $FOUNDRY_APP is no longer published in environment $ENVIRONMENT_NAME"

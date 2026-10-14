@@ -1,0 +1,43 @@
+#!/bin/bash
+# =============================================================================
+# Download a build asset
+#
+# Usage: download_asset <url> <destination>
+#
+# s3://bucket/key  -> aws s3 cp (region ASSETS_REGION, default us-east-1)
+# https://...      -> curl -fsSL, https only (also on redirects), with timeouts
+#
+# Only urls inside ASSETS_BUCKET are accepted (see scripts/validators).
+# Prints the CLI error on failure and exits 1; the caller adds the causes.
+# =============================================================================
+
+set -euo pipefail
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/validators
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/validators"
+
+url="${1:-}"
+destination="${2:-}"
+
+if [ -z "$url" ] || [ -z "$destination" ]; then
+	echo "   ❌ Usage: download_asset <url> <destination>" >&2
+	exit 1
+fi
+
+validate_asset_url "$url" || exit 1
+
+mkdir -p "$(dirname "$destination")"
+
+case "$url" in
+	s3://*)
+		aws s3 cp "$url" "$destination" --region "${ASSETS_REGION:-us-east-1}"
+		;;
+	https://*)
+		curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 300 --retry 2 \
+			-o "$destination" "$url"
+		;;
+	*)
+		echo "   ❌ Unsupported asset url '$url': only s3:// and https:// are supported" >&2
+		exit 1
+		;;
+esac

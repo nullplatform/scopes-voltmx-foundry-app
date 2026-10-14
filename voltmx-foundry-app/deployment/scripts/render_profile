@@ -1,0 +1,84 @@
+#!/bin/bash
+# =============================================================================
+# Render the service configuration profile
+#
+# Reads PROFILE_TEMPLATE (default deployment/templates/service-profile.json.tpl)
+# and writes $WORKDIR/profile.json (mode 600) for import-config:
+#   - a string that is exactly "${PROFILE_VARS}" becomes the PROFILE_VARS object
+#   - every ${NAME} inside a string becomes the value of NAME, taken from
+#     PROFILE_VARS or from FOUNDRY_APP, ENVIRONMENT_NAME, APP_VERSION
+# Rendering is done with jq, so values are JSON-escaped and never printed.
+# An undefined placeholder fails the step, naming only the variable.
+# =============================================================================
+
+# The engine sources every step in one bash -c joined by &&: run this step in
+# a child shell so its exit codes, traps and shell options stay inside it.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
+set -euo pipefail
+
+template="${PROFILE_TEMPLATE:-${SERVICE_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/deployment/templates/service-profile.json.tpl}"
+profile="${WORKDIR:?WORKDIR is not set}/profile.json"
+
+# A failed render must not leave a profile (it carries parameter values).
+cleanup_failed_render() {
+	local status=$?
+	[ "$status" -eq 0 ] || rm -f "$profile"
+}
+trap cleanup_failed_render EXIT
+
+echo "📝 Rendering the service profile for ${FOUNDRY_APP:-} in environment ${ENVIRONMENT_NAME:-}..."
+
+if ! printf '%s' "${PROFILE_VARS:-}" | jq -e 'type == "object"' >/dev/null 2>&1; then
+	{
+		echo "   ❌ PROFILE_VARS is not a JSON object"
+		echo "  🔧 How to fix:"
+		echo "    • Run the deployment workflow from the start so build_context collects the parameters"
+	} >&2
+	exit 1
+fi
+
+if [ ! -f "$template" ] || ! jq -e . "$template" >/dev/null 2>&1; then
+	{
+		echo "   ❌ The service profile template $template is missing or is not valid JSON"
+		echo "  🔧 How to fix:"
+		echo "    • Point PROFILE_TEMPLATE at a JSON file, or restore deployment/templates/service-profile.json.tpl"
+	} >&2
+	exit 1
+fi
+
+# Parameter values travel through the environment (RENDER_VARS, PROFILE_VARS)
+# and stdin only: never through the argv of jq, which any process can read.
+RENDER_VARS=$(printf '%s' "$PROFILE_VARS" | jq -c \
+	--arg app "${FOUNDRY_APP:-}" --arg env "${ENVIRONMENT_NAME:-}" --arg version "${APP_VERSION:-}" \
+	'{FOUNDRY_APP: $app, ENVIRONMENT_NAME: $env, APP_VERSION: $version} + .')
+export RENDER_VARS PROFILE_VARS
+
+placeholders='[.. | strings | select(. != "${PROFILE_VARS}") | scan("\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}") | .[0]] | unique'
+missing=$(jq -r "$placeholders"' as $names | ($ENV.RENDER_VARS | fromjson) as $vars | $names | map(select($vars[.] == null)) | join(", ")' "$template")
+if [ -n "$missing" ]; then
+	{
+		echo "   ❌ The service profile template uses variables that are not defined: $missing"
+		echo "  💡 Possible causes:"
+		echo "    • The application has no parameter with those names for this scope"
+		echo "  🔧 How to fix:"
+		echo "    • Create the parameters in nullplatform (mark secrets as secret) or remove them from $template"
+	} >&2
+	exit 1
+fi
+
+rm -f "$profile"
+(
+	umask 077
+	jq '($ENV.RENDER_VARS | fromjson) as $vars | ($ENV.PROFILE_VARS | fromjson) as $profile_vars
+		| walk(if type == "string" then
+			(if . == "${PROFILE_VARS}" then $profile_vars
+			 else gsub("\\$\\{(?<name>[A-Za-z_][A-Za-z0-9_]*)\\}"; $vars[.name] | tostring) end)
+		else . end)' "$template" > "$profile"
+)
+
+names=$(printf '%s' "$PROFILE_VARS" | jq -r 'keys | join(", ")')
+echo "   ✅ Service profile rendered to $profile (variables: ${names:-none})"

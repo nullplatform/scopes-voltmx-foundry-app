@@ -1,0 +1,37 @@
+#!/bin/bash
+# =============================================================================
+# Publish the app version to the environment
+#
+#   mfcli Publish -e $ENVIRONMENT_NAME -a $FOUNDRY_APP -v $APP_VERSION
+#
+# Publish may return before Foundry finishes: wait_publish polls the result.
+# Republishing the same version is idempotent. When Publish fails, the active
+# version (which Foundry keeps serving) is reported.
+#
+# Publishing makes the version the one every client gets. Publishing a version
+# without making it the default needs set-appversion, which is pending D1, so
+# the scope does not offer it.
+# =============================================================================
+
+# The engine sources every step in one bash -c joined by &&: run this step in
+# a child shell so its exit codes, traps and shell options stay inside it.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
+set -euo pipefail
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mfcli_run"
+
+echo "📝 Publishing $FOUNDRY_APP version $APP_VERSION to environment $ENVIRONMENT_NAME..."
+if ! mfcli_run Publish -e "$ENVIRONMENT_NAME" -a "$FOUNDRY_APP" -v "$APP_VERSION"; then
+	if MFCLI_RUN_QUIET=1 mfcli_run publish-status -e "$ENVIRONMENT_NAME" -a "$FOUNDRY_APP"; then
+		active=$(printf '%s' "$MFCLI_OUTPUT" | jq -r '.active_version // empty' 2>/dev/null || true)
+		echo "   📋 Active version in environment $ENVIRONMENT_NAME: ${active:-none} (the failed publish did not replace it)" >&2
+	fi
+	exit 1
+fi
+[ -z "$MFCLI_OUTPUT" ] || printf '   📋 %s\n' "$MFCLI_OUTPUT"
+echo "✅ Publish requested"

@@ -1,0 +1,207 @@
+#!/bin/bash
+# =============================================================================
+# mfcli_run: the only place that calls the Foundry CLI
+#
+#   mfcli_run <Command> [flags...]
+#
+# Runs: $MFCLI_CMD <Command> -u "$MFCLI_USER" -p "$MFCLI_PASSWORD" $MFCLI_AUTH_ARGS [flags...]
+#
+# Sourced, it defines the function: stdout of mfcli goes to MFCLI_OUTPUT and
+# its error to MFCLI_ERROR (both with the password masked), and the exit code
+# is returned. On failure it prints the error with causes and fixes to stderr
+# unless MFCLI_RUN_QUIET=1. Executed, it runs the command and prints
+# MFCLI_OUTPUT.
+#
+# mfcli_explain_error prints that block for the last failed call, for callers
+# that ran quietly to inspect MFCLI_ERROR first.
+#
+# Every call is bounded by MFCLI_CALL_TIMEOUT_SECONDS (default 300): `timeout`
+# when the image has it, else a sleep + kill watchdog. Both send TERM and, when
+# the CLI ignores it, KILL 5 seconds later. A call that runs out of time
+# returns 124.
+#
+# Errors are translated, in this order:
+#   the call ran out of time (124)
+#   timeout or lock held by another operation (checked before credentials:
+#     a lock message can mention a user)
+#   invalid credentials, user or account locked -> the technical user is
+#     locked or the password rotated
+#   app/version not found, not published
+#
+# The password is passed as an argument (-p) because that is the documented
+# mfcli contract, so it is visible in the process list of the worker while
+# mfcli runs (D1: check whether mfcli takes it from the environment or a
+# file). It never reaches stdout, stderr or any file written by this script.
+# =============================================================================
+
+mfcli_mask() {
+	local text="$1"
+	if [ -n "${MFCLI_PASSWORD:-}" ]; then
+		text="${text//"$MFCLI_PASSWORD"/***}"
+	fi
+	printf '%s' "$text"
+}
+
+# Runs "$@" for at most $1 seconds (plus 5 seconds of grace after TERM);
+# returns 124 when it had to be stopped.
+mfcli_with_timeout() {
+	local seconds="$1" pid watchdog status=0
+	shift
+	if command -v timeout >/dev/null 2>&1; then
+		timeout -k 5 "$seconds" "$@" || {
+			status=$?
+			[ "$status" -eq 137 ] && status=124
+			return "$status"
+		}
+		return 0
+	fi
+	"$@" &
+	pid=$!
+	# The watchdog kills its own sleep when it is stopped, so no process
+	# outlives the call (nor keeps inherited descriptors open).
+	(
+		trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM
+		sleep "$seconds" &
+		sleeper=$!
+		wait "$sleeper" || exit 0
+		kill -TERM "$pid" 2>/dev/null || exit 0
+		sleep 5 &
+		sleeper=$!
+		wait "$sleeper" || exit 0
+		kill -KILL "$pid" 2>/dev/null
+	) </dev/null >/dev/null 2>&1 3>&- &
+	watchdog=$!
+	wait "$pid" || status=$?
+	kill "$watchdog" 2>/dev/null || true
+	wait "$watchdog" 2>/dev/null || true
+	if [ "$status" -eq 143 ] || [ "$status" -eq 137 ]; then
+		status=124
+	fi
+	return "$status"
+}
+
+mfcli_run() {
+	local command="${1:-}"
+	shift || true
+	local -a cli auth
+	local app="" env_name="" version="" arg previous="" err_file status=0
+
+	MFCLI_OUTPUT=""
+	MFCLI_ERROR=""
+
+	if [ -z "${MFCLI_USER:-}" ] || [ -z "${MFCLI_PASSWORD:-}" ] || [ -z "${MFCLI_AUTH_ARGS:-}" ]; then
+		MFCLI_ERROR="credentials not loaded"
+		{
+			echo "   ❌ The Foundry credentials are not loaded (MFCLI_USER, MFCLI_PASSWORD and MFCLI_AUTH_ARGS are required)"
+			echo "  🔧 How to fix:"
+			echo "    • Run build_context and read_credentials before any Foundry step"
+		} >&2
+		return 1
+	fi
+
+	read -r -a cli <<< "${MFCLI_CMD:-}"
+	read -r -a auth <<< "$MFCLI_AUTH_ARGS"
+	if [ "${#cli[@]}" -eq 0 ] || ! command -v "${cli[0]}" >/dev/null 2>&1; then
+		MFCLI_ERROR="mfcli not available"
+		{
+			echo "   ❌ mfcli is not available: ${cli[0]:-MFCLI_CMD} was not found"
+			echo "  💡 Possible causes:"
+			echo "    • The worker image does not include Java and the Foundry CLI (mfcli.jar)"
+			echo "  🔧 How to fix:"
+			echo "    • Build the worker image with OpenJDK and /opt/mfcli/mfcli.jar, or point MFCLI_CMD at the CLI"
+		} >&2
+		return 1
+	fi
+
+	local call_timeout="${MFCLI_CALL_TIMEOUT_SECONDS:-300}"
+	if ! [[ "$call_timeout" =~ ^[0-9]+$ ]] || [ "$call_timeout" -eq 0 ]; then
+		MFCLI_ERROR="invalid MFCLI_CALL_TIMEOUT_SECONDS"
+		{
+			echo "   ❌ MFCLI_CALL_TIMEOUT_SECONDS must be a positive number of seconds, got '$call_timeout'"
+			echo "  🔧 How to fix:"
+			echo "    • Set MFCLI_CALL_TIMEOUT_SECONDS in values.yaml (default 300)"
+		} >&2
+		return 1
+	fi
+
+	for arg in "$@"; do
+		case "$previous" in
+			-a) app="$arg" ;;
+			-e) env_name="$arg" ;;
+			-v) version="$arg" ;;
+		esac
+		previous="$arg"
+	done
+
+	err_file=$(mktemp)
+	# shellcheck disable=SC2064
+	trap "rm -f '$err_file'; trap - RETURN" RETURN
+	MFCLI_OUTPUT=$(mfcli_with_timeout "$call_timeout" "${cli[@]}" "$command" -u "$MFCLI_USER" -p "$MFCLI_PASSWORD" "${auth[@]}" "$@" 2>"$err_file") || status=$?
+	MFCLI_OUTPUT=$(mfcli_mask "$MFCLI_OUTPUT")
+	MFCLI_ERROR=$(mfcli_mask "$(cat "$err_file")")
+	rm -f "$err_file"
+
+	MFCLI_LAST_COMMAND="$command"
+	MFCLI_LAST_STATUS="$status"
+	MFCLI_LAST_TIMEOUT="$call_timeout"
+	MFCLI_LAST_APP="$app"
+	MFCLI_LAST_ENV="$env_name"
+	MFCLI_LAST_VERSION="$version"
+	[ "$status" -eq 0 ] && return 0
+	[ "${MFCLI_RUN_QUIET:-0}" = "1" ] && return "$status"
+	mfcli_explain_error
+	return "$status"
+}
+
+# Print the error of the last failed mfcli_run with causes and fixes (stderr).
+# Lets a caller run quietly, inspect MFCLI_ERROR, and still report it.
+mfcli_explain_error() {
+	local command="${MFCLI_LAST_COMMAND:-}" status="${MFCLI_LAST_STATUS:-1}" first_line
+	local app="${MFCLI_LAST_APP:-}" env_name="${MFCLI_LAST_ENV:-}" version="${MFCLI_LAST_VERSION:-}"
+
+	first_line=$(printf '%s\n' "$MFCLI_ERROR" | sed '/^[[:space:]]*$/d' | head -n 1)
+	[ -n "$first_line" ] || first_line=$(printf '%s\n' "$MFCLI_OUTPUT" | sed '/^[[:space:]]*$/d' | head -n 1)
+	if [ "$status" -eq 124 ]; then
+		{
+			echo "   ❌ mfcli $command did not finish in ${MFCLI_LAST_TIMEOUT:-300}s (MFCLI_CALL_TIMEOUT_SECONDS)"
+			echo "  💡 Possible causes:"
+			echo "    • Foundry is unreachable from the worker or does not answer (console or identity URL, network, proxy)"
+			echo "  🔧 How to fix:"
+			echo "    • Check that the worker reaches Foundry and re-run the deployment: Import and Publish are idempotent"
+			echo "    • Raise MFCLI_CALL_TIMEOUT_SECONDS if this call is legitimately slow"
+		} >&2
+		return 0
+	fi
+	{
+		echo "   ❌ mfcli $command failed (exit $status): ${first_line:-no error message}"
+		shopt -s nocasematch
+		if [[ "$MFCLI_ERROR" =~ (timed\ out|timeout|(^|[^a-z])lock([^a-z]|$)) ]]; then
+			echo "  💡 Possible causes:"
+			echo "    • Foundry did not answer in time, or another import or publish of app '${app:-${FOUNDRY_APP:-}}' holds the lock"
+			echo "  🔧 How to fix:"
+			echo "    • Re-run the deployment when the other operation finishes: Import and Publish are idempotent"
+		elif [[ "$MFCLI_ERROR" =~ (authentication\ failed|invalid\ credentials|unauthori[sz]ed|user.*locked|account.*locked) ]]; then
+			echo "  💡 Possible causes: the Foundry technical user is locked or the password rotated"
+			echo "    • The secret '${CREDENTIALS_SECRET:-<credentials_secret>}' still holds an old password of user '$MFCLI_USER'"
+			echo "  🔧 How to fix:"
+			echo "    • Unlock the user '$MFCLI_USER' in the Foundry console and store its current password in the secret '${CREDENTIALS_SECRET:-<credentials_secret>}'"
+		elif [[ "$MFCLI_ERROR" =~ (app\ \'.*not\ found|not\ published|does\ not\ exist) ]]; then
+			echo "  💡 Possible causes:"
+			echo "    • App '${app:-${FOUNDRY_APP:-}}' version ${version:-(latest)} was never imported into Foundry, or it is not published in environment '${env_name:-${ENVIRONMENT_NAME:-}}'"
+			echo "    • The app name of the scope does not match the name of the app in Foundry"
+			echo "  🔧 How to fix:"
+			echo "    • Check the apps and versions in the Foundry console, then deploy a release that imports that version"
+		else
+			echo "  💡 Possible causes:"
+			echo "    • The error reported by mfcli above"
+			echo "  🔧 How to fix:"
+			echo "    • Fix the cause reported by mfcli and re-run the deployment"
+		fi
+		shopt -u nocasematch
+	} >&2
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	mfcli_run "$@" || exit $?
+	[ -z "$MFCLI_OUTPUT" ] || printf '%s\n' "$MFCLI_OUTPUT"
+fi

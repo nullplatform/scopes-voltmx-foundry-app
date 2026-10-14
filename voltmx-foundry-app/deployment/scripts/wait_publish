@@ -1,0 +1,109 @@
+#!/bin/bash
+# =============================================================================
+# Wait for the publish to finish
+#
+#   wait_publish [version]    (default: APP_VERSION)
+#
+# Polls `mfcli publish-status -e $ENVIRONMENT_NAME -a $FOUNDRY_APP` every
+# PUBLISH_POLL_SECONDS until it reports success or failed for that version, or
+# PUBLISH_TIMEOUT_SECONDS pass. publish-status answers
+# {"status", "version", "active_version"}; the fields are read one by one.
+#
+# success only counts when both version and active_version are the target;
+# a success that reports another version (a publish by someone else, or a
+# status that has not caught up yet) keeps polling until the timeout.
+# An answer that is not that JSON fails at once (D1: real format).
+# A timeout fails the step and names the version that is still active: the
+# publish is idempotent, so re-running the deployment is the fix.
+# =============================================================================
+
+# The engine sources every step in one bash -c joined by &&: run this step in
+# a child shell so its exit codes, traps and shell options stay inside it.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
+set -euo pipefail
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mfcli_run"
+
+target="${1:-${APP_VERSION:-}}"
+timeout="${PUBLISH_TIMEOUT_SECONDS:-900}"
+interval="${PUBLISH_POLL_SECONDS:-15}"
+
+if ! [[ "$timeout" =~ ^[0-9]+$ ]] || ! [[ "$interval" =~ ^[0-9]+$ ]]; then
+	{
+		echo "   ❌ PUBLISH_TIMEOUT_SECONDS and PUBLISH_POLL_SECONDS must be non-negative integers (got '$timeout' and '$interval')"
+		echo "  🔧 How to fix:"
+		echo "    • Set them to a number of seconds in values.yaml"
+	} >&2
+	exit 1
+fi
+
+echo "🔍 Waiting for the publish of $FOUNDRY_APP $target in environment $ENVIRONMENT_NAME (timeout ${timeout}s, every ${interval}s)..."
+
+start=$(date +%s)
+active=""
+while true; do
+	mfcli_run publish-status -e "$ENVIRONMENT_NAME" -a "$FOUNDRY_APP" || exit 1
+	if ! printf '%s' "$MFCLI_OUTPUT" | jq -e 'type == "object" and (.status | type == "string")' >/dev/null 2>&1; then
+		{
+			echo "   ❌ publish-status of $FOUNDRY_APP did not return the expected JSON ({\"status\", \"version\", \"active_version\"})"
+			echo "  💡 Possible causes:"
+			echo "    • The installed mfcli prints publish-status in another format than the one this scope expects"
+			echo "  🔧 How to fix:"
+			echo "    • Check the publish of $FOUNDRY_APP in the Foundry console (environment $ENVIRONMENT_NAME) and adapt wait_publish to this mfcli version"
+		} >&2
+		exit 1
+	fi
+	status=$(printf '%s' "$MFCLI_OUTPUT" | jq -r '.status // empty' 2>/dev/null || true)
+	version=$(printf '%s' "$MFCLI_OUTPUT" | jq -r '.version // empty' 2>/dev/null || true)
+	active=$(printf '%s' "$MFCLI_OUTPUT" | jq -r '.active_version // empty' 2>/dev/null || true)
+	elapsed=$(( $(date +%s) - start ))
+
+	case "$status" in
+		success)
+			if [ "$version" = "$target" ] && [ "$active" = "$target" ]; then
+				echo "   ✅ Version $target is active in environment $ENVIRONMENT_NAME"
+				echo "✨ Publish finished"
+				exit 0
+			fi
+			;;
+		failed)
+			if [ "$version" = "$target" ]; then
+				{
+					echo "   ❌ Foundry reported the publish of version $target as failed; version ${active:-none} is still active"
+					echo "  💡 Possible causes:"
+					echo "    • Foundry could not publish the app (services, identity providers or the service profile)"
+					echo "  🔧 How to fix:"
+					echo "    • Check the publish logs of $FOUNDRY_APP in the Foundry console (environment $ENVIRONMENT_NAME), fix the app and deploy again"
+				} >&2
+				exit 1
+			fi
+			;;
+	esac
+
+	if [ "$elapsed" -ge "$timeout" ]; then
+		if [ -n "$active" ]; then
+			still_active="version $active is still active"
+		else
+			still_active="no version is active yet"
+		fi
+		{
+			echo "   ❌ Publish did not finish in ${timeout}s; $still_active. Re-run the deployment: Publish is idempotent"
+			echo "  💡 Possible causes:"
+			echo "    • Foundry is still publishing (large apps or a busy server take longer)"
+			echo "    • The publish is stuck in Foundry"
+			echo "  🔧 How to fix:"
+			echo "    • Check the publish status of $FOUNDRY_APP in the Foundry console (environment $ENVIRONMENT_NAME)"
+			echo "    • Raise PUBLISH_TIMEOUT_SECONDS if publishes of this app usually take longer than ${timeout}s"
+		} >&2
+		exit 1
+	fi
+
+	shown_status="${status:-pending}"
+	echo "   📝 Publish ${shown_status//_/ }: version ${version:-$target}, active ${active:-none} (${elapsed}s/${timeout}s)"
+	sleep "$interval"
+done

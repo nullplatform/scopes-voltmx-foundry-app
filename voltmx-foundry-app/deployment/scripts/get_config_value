@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Function to get configuration value with priority hierarchy
+# Priority order (highest to lowest): providers > environment variables > default
+# Usage: get_config_value [--provider "jq.path"] ... [--env ENV_VAR] ... [--default "value"]
+# Returns the first non-empty value found according to priority order
+# Note: The order of arguments does NOT affect priority - providers always win, then env vars (in order), then default
+get_config_value() {
+	local default_value=""
+	local -a providers=()
+	local -a env_vars=()
+
+	# First pass: collect all arguments
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			--env)
+				env_vars+=("${2:-}")
+				shift 2
+				;;
+			--provider)
+				providers+=("${2:-}")
+				shift 2
+				;;
+			--default)
+				default_value="${2:-}"
+				shift 2
+				;;
+			*)
+				shift
+				;;
+		esac
+	done
+
+	# Priority 1: Check all providers in order (skip if CONTEXT is not set)
+	if [ -n "${CONTEXT:-}" ] && [ ${#providers[@]} -gt 0 ]; then
+		for jq_path in "${providers[@]}"; do
+			if [ -n "$jq_path" ]; then
+				local provider_value
+				provider_value=$(echo "$CONTEXT" | jq -r "$jq_path // empty")
+				if [ -n "$provider_value" ] && [ "$provider_value" != "null" ]; then
+					echo "$provider_value"
+					return 0
+				fi
+			fi
+		done
+	fi
+
+	# Priority 2: Check environment variables in order
+	if [ ${#env_vars[@]} -gt 0 ]; then
+		for env_var in "${env_vars[@]}"; do
+			if [ -n "$env_var" ] && [ -n "${!env_var:-}" ]; then
+				echo "${!env_var}"
+				return 0
+			fi
+		done
+	fi
+
+	# Priority 3: Use default value
+	if [ -n "$default_value" ]; then
+		echo "$default_value"
+		return 0
+	fi
+
+	# No value found
+	echo ""
+}

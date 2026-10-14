@@ -1,0 +1,590 @@
+#!/bin/bash
+# =============================================================================
+# Build context
+#
+# Reads CONTEXT (the deployment context JSON the agent passes with
+# --build-context) and exports everything the later steps of the deployment
+# workflows need. np service workflow exec sources every step in one bash -c,
+# joined by &&, so the exports stay in the session; the `output:` the
+# workflow lists is informative only.
+#
+# BUILD_CONTEXT_MODE (step configuration):
+#   deployment  (default) start-initial: deployment and release required, the
+#               'foundry' asset, the profile variables and the previous
+#               deployment are resolved.
+#   rollback    rollback-deployment and delete-deployment: deployment and
+#               release required, previous deployment resolved; the asset and
+#               the profile variables are not (they are not needed, and a
+#               rollback or a cleanup must work when that build has no asset).
+#   scope       create/update/delete-scope: no deployment, release or asset in
+#               the context. The app binding, the auth, the environment and the
+#               secrets are still validated; APP_VERSION, ASSET_URL and
+#               PREVIOUS_* are empty and PROFILE_VARS is {}. DEPLOYMENT_ID is
+#               optional (validated when present). WORKDIR is a fresh
+#               $WORKDIR_BASE/scope-<scope id>-XXXXXX when there is no
+#               deployment. When SCOPE_ID is already set (the entrypoint exports
+#               the requested scope), the scope of the context must be that one.
+#
+# Exports:
+#   FOUNDRY_APP             .scope.capabilities.foundry_app_name
+#   APP_VERSION             = .release.semver (the Foundry app version)
+#   ASSET_TYPE, ASSET_URL   the asset named 'foundry' of the build, of type .asset.type
+#   ENVIRONMENT_NAME        Foundry environment (scope configuration environment_name)
+#   MFCLI_AUTH_ARGS         "-t <account>" (cloud) or "-au <identity url> -cu <console url>"
+#   CREDENTIALS_SECRET      secret with {"username","password"}, under SECRETS_PREFIX
+#   SECRETS_PREFIX          secrets_prefix of the scope configuration, else voltmx/<namespace slug>/
+#   ASSETS_BUCKET, ASSETS_REGION
+#   SCOPE_CONFIGURATION     the whole 'Volt MX Foundry app' scope configuration (JSON)
+#   PROFILE_VARS            {"<variable>": "<value>"} from .parameters.results (never printed)
+#   PREVIOUS_DEPLOYMENT_ID, PREVIOUS_RELEASE_SEMVER  finalized deployment still
+#                           active in the scope, else the most recent finalized one
+#   RELEASE_SEMVER, DEPLOYMENT_ID, SCOPE_ID, DIMENSION
+#   APPLICATION_SLUG, NAMESPACE_SLUG, SCOPE_SLUG
+#   WORKDIR_BASE            $WORKDIR as configured (values.yaml), kept for re-runs
+#   WORKDIR                 $WORKDIR_BASE/<deployment id>, created
+#   CONTEXT                 with .providers["scope-configurations"] replaced by ours
+#
+# Foundry environments are shared by the apps of many teams, and the app name
+# is chosen by the developer. The scope configuration (owned by DevOps) binds
+# the scopes of a namespace or dimension to their apps (allowed_apps and/or
+# app_name_prefix, fail closed when neither is set) and to their technical
+# user (credentials_secret under SECRETS_PREFIX).
+#
+# Every value is validated before it reaches a path, an np call or mfcli.
+# Parameter values and the scope configuration are never printed.
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=voltmx-foundry-app/deployment/scripts/get_config_value
+source "$SCRIPT_DIR/get_config_value"
+# shellcheck source=voltmx-foundry-app/deployment/scripts/validators
+source "$SCRIPT_DIR/validators"
+
+if [ -z "${CONTEXT:-}" ] || ! echo "$CONTEXT" | jq -e . >/dev/null 2>&1; then
+	{
+		echo "   ❌ CONTEXT is not set or is not valid JSON"
+		echo "  🔧 How to fix:"
+		echo "    • Run this script from a workflow executed with np service workflow exec --build-context"
+	} >&2
+	exit 1
+fi
+
+ctx() {
+	echo "$CONTEXT" | jq -r "$@"
+}
+
+BUILD_CONTEXT_MODE="${BUILD_CONTEXT_MODE:-deployment}"
+case "$BUILD_CONTEXT_MODE" in
+	deployment | rollback | scope) ;;
+	*)
+		{
+			echo "   ❌ Unknown BUILD_CONTEXT_MODE '$BUILD_CONTEXT_MODE': expected deployment, rollback or scope"
+			echo "  💡 Possible causes:"
+			echo "    • The workflow step that runs build_context sets configuration.BUILD_CONTEXT_MODE to an unexpected value"
+			echo "  🔧 How to fix:"
+			echo "    • Set BUILD_CONTEXT_MODE to scope (scope workflows), rollback (rollback and delete-deployment) or leave it unset (start-initial)"
+		} >&2
+		exit 1
+		;;
+esac
+requested_scope_id="${SCOPE_ID:-}"
+
+echo "🔍 Building $BUILD_CONTEXT_MODE context..."
+
+# =============================================================================
+# Identity
+# =============================================================================
+APPLICATION_SLUG=$(ctx '.application.slug // empty')
+NAMESPACE_SLUG=$(ctx '.namespace.slug // empty')
+SCOPE_SLUG=$(ctx '.scope.slug // empty')
+SCOPE_ID=$(ctx '.scope.id // empty')
+DEPLOYMENT_ID=$(ctx '.deployment.id // empty')
+RELEASE_SEMVER=$(ctx '.release.semver // empty')
+DIMENSION=$(ctx '.scope.dimensions.environment // "default"')
+
+fail_invalid_context_value() {
+	local label="$1" value="$2" rule="$3"
+	{
+		echo "   ❌ Invalid $label '$value': $rule"
+		echo "  💡 Possible causes:"
+		echo "    • The context was not produced by the platform (CONTEXT was edited or built by hand)"
+		echo "  🔧 How to fix:"
+		echo "    • Run this script from a workflow executed with np service workflow exec --build-context"
+	} >&2
+	exit 1
+}
+
+if [ "$BUILD_CONTEXT_MODE" != "scope" ] || [ -n "$DEPLOYMENT_ID" ]; then
+	[[ "$DEPLOYMENT_ID" =~ ^[0-9]+$ ]] || fail_invalid_context_value "deployment id" "$DEPLOYMENT_ID" "must be an integer"
+fi
+[[ "$SCOPE_ID" =~ ^[0-9]+$ ]] || fail_invalid_context_value "scope id" "$SCOPE_ID" "must be an integer"
+if [ "$BUILD_CONTEXT_MODE" = "scope" ] && [ -n "$requested_scope_id" ] && [ "$requested_scope_id" != "$SCOPE_ID" ]; then
+	{
+		echo "   ❌ The context belongs to scope $SCOPE_ID, not to the requested scope $requested_scope_id"
+		echo "  💡 Possible causes:"
+		echo "    • build-context resolved a different scope than the one the notification asks about"
+		echo "  🔧 How to fix:"
+		echo "    • Run the workflow with np service workflow exec --build-context and .notification.parameters.scope_id set to the requested scope"
+	} >&2
+	exit 1
+fi
+if ! [[ "$DIMENSION" =~ ^[a-z0-9-]+$ ]]; then
+	{
+		echo "   ❌ Invalid dimension '$DIMENSION': only lowercase letters, digits and dashes are allowed"
+		echo "  💡 Possible causes:"
+		echo "    • The environment dimension of the scope has an unexpected value"
+		echo "  🔧 How to fix:"
+		echo "    • Use dimension values made of lowercase letters, digits and dashes only"
+	} >&2
+	exit 1
+fi
+
+if ! [[ "$NAMESPACE_SLUG" =~ ^[a-z0-9-]+$ ]]; then
+	{
+		echo "   ❌ Invalid namespace slug '$NAMESPACE_SLUG': only lowercase letters, digits and dashes are allowed"
+		echo "  💡 Possible causes:"
+		echo "    • The context was not produced by the platform (CONTEXT was edited or built by hand)"
+		echo "  🔧 How to fix:"
+		echo "    • Run this script from a workflow executed with np service workflow exec --build-context"
+	} >&2
+	exit 1
+fi
+
+if [ "$BUILD_CONTEXT_MODE" = "scope" ] && [ -z "$DEPLOYMENT_ID" ]; then
+	echo "   📋 Scope: $NAMESPACE_SLUG/$APPLICATION_SLUG/$SCOPE_SLUG (id $SCOPE_ID) | Dimension: $DIMENSION"
+else
+	echo "   📋 Scope: $NAMESPACE_SLUG/$APPLICATION_SLUG/$SCOPE_SLUG (id $SCOPE_ID) | Dimension: $DIMENSION | Deployment: $DEPLOYMENT_ID | Release: $RELEASE_SEMVER"
+fi
+
+# =============================================================================
+# Developer capabilities and release
+# =============================================================================
+FOUNDRY_APP=$(ctx '.scope.capabilities.foundry_app_name // empty')
+validate_foundry_name "$FOUNDRY_APP" "Foundry app name" \
+	"The scope was created with a foundry_app_name that is not a Foundry app name" \
+	"Recreate the scope with the app name exactly as it appears in the Foundry console (it is only editable on create)" || exit 1
+
+if [ "$BUILD_CONTEXT_MODE" = "scope" ]; then
+	APP_VERSION=""
+	echo "   📋 Foundry app: $FOUNDRY_APP | Version: none (scope mode)"
+else
+	validate_semver "$RELEASE_SEMVER" || exit 1
+	APP_VERSION="$RELEASE_SEMVER"
+	echo "   📋 Foundry app: $FOUNDRY_APP | Version: $APP_VERSION"
+fi
+
+# =============================================================================
+# Scope configuration: platform lookup > context > environment variables
+#
+# Every scope type of an account shares the scope-configurations category and
+# the context carries a single one, which can belong to another scope type.
+# Ask the platform for the 'voltmx-foundry-app' configuration by its
+# specification, deepest NRN wins, matching the scope's own dimensions. When
+# the lookup itself fails trust the context (warning that it may be another
+# scope type's), and as a last resort use the environment variables.
+# =============================================================================
+# Sets resolved_configuration ({nrn, attributes} or empty).
+# Returns 0 when found, 1 when the platform has no configuration, 2 when the
+# lookup itself failed.
+resolve_scope_configuration() {
+	local nrn specifications spec_id dims listing
+	resolved_configuration=""
+	nrn=$(ctx '.scope.nrn // empty')
+	[ -n "$nrn" ] || return 2
+
+	specifications=$(np provider specification list --nrn "$nrn" --format json 2>/dev/null) || return 2
+	spec_id=$(echo "$specifications" | jq -r '[.results[]? | select(.slug == "voltmx-foundry-app")] | first | .id // empty' 2>/dev/null) || return 2
+	[ -n "$spec_id" ] || return 2
+
+	dims=$(ctx '.scope.dimensions // {} | to_entries | map("\(.key):\(.value)") | join(",")')
+	local -a dims_args=()
+	[ -n "$dims" ] && dims_args=(--dimensions "$dims")
+
+	listing=$(np provider list --nrn "$nrn" --categories scope-configurations --show-ascendants \
+		${dims_args[@]+"${dims_args[@]}"} --format json 2>/dev/null) || return 2
+	echo "$listing" | jq -e 'type == "object" and has("results")' >/dev/null 2>&1 || return 2
+
+	resolved_configuration=$(echo "$listing" | jq -c --arg spec "$spec_id" '
+		[.results[]? | select(.specification_id == $spec)]
+		| sort_by(.nrn | split(":") | length)
+		| last
+		| select(. != null)
+		| {nrn: .nrn, attributes: (.attributes // {})}
+	' 2>/dev/null) || return 2
+	[ -n "$resolved_configuration" ] || return 1
+	return 0
+}
+
+scope_configuration_source=""
+resolved_configuration=""
+lookup_status=0
+resolve_scope_configuration || lookup_status=$?
+if [ "$lookup_status" -eq 0 ]; then
+	SCOPE_CONFIGURATION=$(echo "$resolved_configuration" | jq -c .attributes)
+	scope_configuration_source="resolved from the platform (nrn $(echo "$resolved_configuration" | jq -r .nrn))"
+	CONTEXT=$(echo "$CONTEXT" | jq -c --argjson configuration "$SCOPE_CONFIGURATION" \
+		'.providers["scope-configurations"] = $configuration')
+else
+	if [ "$lookup_status" -eq 2 ]; then
+		echo "   ⚠️ Could not resolve the Volt MX Foundry app scope configuration from the platform; trusting the context, which may belong to another scope type"
+	fi
+	# Only a configuration that looks like ours (it has environment_name) is
+	# trusted; anything else is treated as missing.
+	if [ "$(ctx '.providers["scope-configurations"] | type == "object" and has("environment_name")')" = "true" ]; then
+		SCOPE_CONFIGURATION=$(ctx -c '.providers["scope-configurations"]')
+		scope_configuration_source="taken from the context"
+	else
+		CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.providers["scope-configurations"])')
+		SCOPE_CONFIGURATION=""
+		scope_configuration_source="taken from environment variables"
+	fi
+fi
+echo "   📋 Scope configuration: $scope_configuration_source"
+
+config_path='.providers["scope-configurations"]'
+ENVIRONMENT_NAME=$(get_config_value --provider "$config_path.environment_name" --env ENVIRONMENT_NAME)
+foundry_account_id=$(get_config_value --provider "$config_path.auth.account_id" --env FOUNDRY_ACCOUNT_ID)
+foundry_identity_url=$(get_config_value --provider "$config_path.auth.identity_url" --env FOUNDRY_IDENTITY_URL)
+foundry_console_url=$(get_config_value --provider "$config_path.auth.console_url" --env FOUNDRY_CONSOLE_URL)
+CREDENTIALS_SECRET=$(get_config_value --provider "$config_path.credentials_secret" --env CREDENTIALS_SECRET)
+ASSETS_BUCKET=$(get_config_value --provider "$config_path.assets.bucket" --env ASSETS_BUCKET)
+ASSETS_REGION=$(get_config_value --provider "$config_path.assets.region" --env ASSETS_REGION --default "us-east-1")
+app_name_prefix=$(get_config_value --provider "$config_path.app_name_prefix" --env FOUNDRY_APP_NAME_PREFIX)
+configured_secrets_prefix=$(get_config_value --provider "$config_path.secrets_prefix" --env SECRETS_PREFIX)
+# allowed_apps is a JSON array in the scope configuration, a comma separated
+# list in FOUNDRY_ALLOWED_APPS.
+allowed_apps=$(ctx -c "$config_path.allowed_apps // empty")
+if [ -z "$allowed_apps" ] || [ "$allowed_apps" = "[]" ]; then
+	allowed_apps=$(jq -nc --arg list "${FOUNDRY_ALLOWED_APPS:-}" '$list | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
+fi
+
+missing_fields=""
+[ -n "$ENVIRONMENT_NAME" ] || missing_fields="$missing_fields, environment_name"
+if [ -z "$foundry_account_id" ] && { [ -z "$foundry_identity_url" ] || [ -z "$foundry_console_url" ]; }; then
+	missing_fields="$missing_fields, auth"
+fi
+[ -n "$CREDENTIALS_SECRET" ] || missing_fields="$missing_fields, credentials_secret"
+[ -n "$ASSETS_BUCKET" ] || missing_fields="$missing_fields, assets.bucket"
+if [ -n "$missing_fields" ]; then
+	{
+		echo "   ❌ Scope configuration is incomplete: missing ${missing_fields#, }"
+		echo "  💡 Possible causes:"
+		echo "    • No 'Volt MX Foundry app' scope configuration is attached to the account, namespace or dimension of this scope"
+		echo "    • The scope configuration does not set those fields"
+		echo "  🔧 How to fix:"
+		echo "    • Create a 'Volt MX Foundry app' scope configuration (category scope-configurations) for the account, namespace or dimension of this scope"
+		echo "    • Or set the ENVIRONMENT_NAME, FOUNDRY_ACCOUNT_ID (or FOUNDRY_IDENTITY_URL and FOUNDRY_CONSOLE_URL), CREDENTIALS_SECRET and ASSETS_BUCKET environment variables"
+	} >&2
+	exit 1
+fi
+
+validate_foundry_name "$ENVIRONMENT_NAME" "environment_name" \
+	"environment_name of the 'Volt MX Foundry app' scope configuration (or ENVIRONMENT_NAME) is not a Foundry environment name" \
+	"Set environment_name to the environment name exactly as it appears in the Foundry console" || exit 1
+
+validate_https_url() {
+	local field="$1" value="$2"
+	if [[ "$value" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+		return 0
+	fi
+	{
+		echo "   ❌ Invalid auth.$field '$value': must be an https URL without spaces"
+		echo "  💡 Possible causes:"
+		echo "    • The on-premises URL of the 'Volt MX Foundry app' scope configuration is incomplete or not https"
+		echo "  🔧 How to fix:"
+		echo "    • Set auth.$field to the https URL of the Foundry server (e.g. https://foundry.example.com)"
+	} >&2
+	exit 1
+}
+
+if [ -n "$foundry_account_id" ]; then
+	if [ -n "$foundry_identity_url" ] || [ -n "$foundry_console_url" ]; then
+		{
+			echo "   ❌ auth must set either account_id (cloud) or identity_url and console_url (on-premises), not both"
+			echo "  💡 Possible causes:"
+			echo "    • The 'Volt MX Foundry app' scope configuration mixes the cloud and the on-premises settings"
+			echo "  🔧 How to fix:"
+			echo "    • Keep account_id for Volt MX cloud, or identity_url and console_url for an on-premises Foundry"
+		} >&2
+		exit 1
+	fi
+	if ! [[ "$foundry_account_id" =~ ^[0-9]{9}$ ]]; then
+		{
+			echo "   ❌ Invalid auth.account_id '$foundry_account_id': must be the 9-digit Volt MX cloud account id"
+			echo "  💡 Possible causes:"
+			echo "    • The value was copied with extra characters, or it is not the cloud account id"
+			echo "  🔧 How to fix:"
+			echo "    • Copy the account id from the Volt MX cloud portal (9 digits)"
+		} >&2
+		exit 1
+	fi
+	MFCLI_AUTH_ARGS="-t $foundry_account_id"
+	auth_summary="cloud (account $foundry_account_id)"
+	auth_json=$(jq -nc --arg a "$foundry_account_id" '{account_id: $a}')
+else
+	validate_https_url "identity_url" "$foundry_identity_url"
+	validate_https_url "console_url" "$foundry_console_url"
+	MFCLI_AUTH_ARGS="-au $foundry_identity_url -cu $foundry_console_url"
+	auth_summary="on-premises (identity $foundry_identity_url, console $foundry_console_url)"
+	auth_json=$(jq -nc --arg i "$foundry_identity_url" --arg c "$foundry_console_url" '{identity_url: $i, console_url: $c}')
+fi
+
+SECRETS_PREFIX="${configured_secrets_prefix:-voltmx/$NAMESPACE_SLUG/}"
+if ! [[ "$SECRETS_PREFIX" =~ ^voltmx/[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*/$ ]]; then
+	{
+		echo "   ❌ Invalid secrets_prefix '$SECRETS_PREFIX': must be a folder under voltmx/ ending in / (e.g. voltmx/$NAMESPACE_SLUG/)"
+		echo "  💡 Possible causes:"
+		echo "    • secrets_prefix of the 'Volt MX Foundry app' scope configuration (or SECRETS_PREFIX) is too broad or not a folder"
+		echo "  🔧 How to fix:"
+		echo "    • Set secrets_prefix to the folder that holds the secrets of this namespace only, or remove it to use voltmx/$NAMESPACE_SLUG/"
+	} >&2
+	exit 1
+fi
+
+validate_scope_secret_name "$CREDENTIALS_SECRET" "credentials_secret" "${SECRETS_PREFIX}foundry-uat" || exit 1
+validate_secret_in_prefix "$CREDENTIALS_SECRET" "$SECRETS_PREFIX" || exit 1
+
+if ! [[ "$ASSETS_BUCKET" =~ ^[a-z0-9.-]+$ ]]; then
+	{
+		echo "   ❌ Invalid assets bucket '$ASSETS_BUCKET': only lowercase letters, digits, dots and dashes are allowed"
+		echo "  💡 Possible causes:"
+		echo "    • The assets.bucket field of the 'Volt MX Foundry app' scope configuration (or ASSETS_BUCKET) is not a bare bucket name"
+		echo "  🔧 How to fix:"
+		echo "    • Set assets.bucket to the bucket name only (no scheme, path or spaces)"
+	} >&2
+	exit 1
+fi
+if ! [[ "$ASSETS_REGION" =~ ^[a-z0-9-]+$ ]]; then
+	{
+		echo "   ❌ Invalid assets region '$ASSETS_REGION': only lowercase letters, digits and dashes are allowed"
+		echo "  💡 Possible causes:"
+		echo "    • The assets.region field of the 'Volt MX Foundry app' scope configuration (or ASSETS_REGION) is not a region name"
+		echo "  🔧 How to fix:"
+		echo "    • Set assets.region to a region name such as us-east-1"
+	} >&2
+	exit 1
+fi
+
+# =============================================================================
+# App binding: the developer picks the app name, DevOps decides which apps
+# the scopes of this namespace or dimension may touch. Fail closed.
+# =============================================================================
+if ! echo "$allowed_apps" | jq -e 'type == "array" and all(type == "string")' >/dev/null 2>&1; then
+	{
+		echo "   ❌ allowed_apps must be a list of app names"
+		echo "  🔧 How to fix:"
+		echo "    • Set allowed_apps in the 'Volt MX Foundry app' scope configuration to a list such as [\"PetStore\", \"Payments*\"]"
+	} >&2
+	exit 1
+fi
+allowed_list=$(echo "$allowed_apps" | jq -r 'join(", ")')
+if [ -z "$allowed_list" ] && [ -z "$app_name_prefix" ]; then
+	{
+		echo "   ❌ Configure allowed_apps or app_name_prefix in the Volt MX Foundry app scope configuration"
+		echo "  💡 Possible causes:"
+		echo "    • The scope configuration does not say which Foundry apps the scopes of this namespace or dimension may deploy"
+		echo "  🔧 How to fix:"
+		echo "    • Set allowed_apps (app names, or Prefix* globs) or app_name_prefix in the 'Volt MX Foundry app' scope configuration"
+	} >&2
+	exit 1
+fi
+
+fail_app_not_allowed() {
+	{
+		echo "   ❌ Foundry app '$FOUNDRY_APP' is not allowed for this scope: $1"
+		echo "  💡 Possible causes:"
+		echo "    • The app belongs to another team: Foundry environments are shared by the apps of many namespaces"
+		echo "    • The 'Volt MX Foundry app' scope configuration of this namespace or dimension does not list the app yet"
+		echo "  🔧 How to fix:"
+		echo "    • Create the scope for an app of your team, or ask DevOps to add '$FOUNDRY_APP' to allowed_apps (or app_name_prefix) of the scope configuration"
+	} >&2
+	exit 1
+}
+
+binding_summary=""
+if [ -n "$allowed_list" ]; then
+	app_allowed=false
+	while IFS= read -r pattern; do
+		if ! [[ "$pattern" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[*]?$ ]] || [[ "$pattern" == *..* ]]; then
+			{
+				echo "   ❌ Invalid allowed_apps entry '$pattern': use an app name or a prefix followed by * (e.g. Payments*)"
+				echo "  💡 Possible causes:"
+				echo "    • allowed_apps of the 'Volt MX Foundry app' scope configuration has a wildcard other than a trailing *"
+				echo "  🔧 How to fix:"
+				echo "    • List app names, or prefixes followed by * (a lone * is not allowed)"
+			} >&2
+			exit 1
+		fi
+		if [[ "$pattern" == *"*" ]]; then
+			[[ "$FOUNDRY_APP" == "${pattern%"*"}"* ]] && app_allowed=true
+		elif [ "$FOUNDRY_APP" = "$pattern" ]; then
+			app_allowed=true
+		fi
+	done < <(echo "$allowed_apps" | jq -r '.[]')
+	[ "$app_allowed" = "true" ] || fail_app_not_allowed "it does not match allowed_apps ($allowed_list)"
+	binding_summary="allowed_apps: $allowed_list"
+fi
+if [ -n "$app_name_prefix" ]; then
+	is_foundry_name "$app_name_prefix" || fail_app_not_allowed "app_name_prefix '$app_name_prefix' is not a valid app name prefix"
+	[[ "$FOUNDRY_APP" == "$app_name_prefix"* ]] || fail_app_not_allowed "it does not start with app_name_prefix '$app_name_prefix'"
+	binding_summary="${binding_summary:+$binding_summary | }app_name_prefix: $app_name_prefix"
+fi
+
+if [ -z "$SCOPE_CONFIGURATION" ]; then
+	SCOPE_CONFIGURATION=$(jq -nc \
+		--arg env "$ENVIRONMENT_NAME" --argjson auth "$auth_json" --arg secret "$CREDENTIALS_SECRET" \
+		--arg bucket "$ASSETS_BUCKET" --arg region "$ASSETS_REGION" --argjson allowed "$allowed_apps" \
+		--arg prefix "$app_name_prefix" --arg secrets_prefix "$configured_secrets_prefix" \
+		'{environment_name: $env, auth: $auth, credentials_secret: $secret, assets: {bucket: $bucket, region: $region}, allowed_apps: $allowed}
+		+ (if $prefix != "" then {app_name_prefix: $prefix} else {} end)
+		+ (if $secrets_prefix != "" then {secrets_prefix: $secrets_prefix} else {} end)')
+	CONTEXT=$(echo "$CONTEXT" | jq -c --argjson configuration "$SCOPE_CONFIGURATION" \
+		'.providers["scope-configurations"] = $configuration')
+fi
+
+echo "   ✅ environment_name=$ENVIRONMENT_NAME"
+echo "   ✅ auth=$auth_summary"
+echo "   ✅ foundry_app=$FOUNDRY_APP is allowed for this scope ($binding_summary)"
+echo "   ✅ credentials_secret=$CREDENTIALS_SECRET (secrets prefix $SECRETS_PREFIX)"
+echo "   ✅ assets_bucket=$ASSETS_BUCKET (region $ASSETS_REGION)"
+
+# =============================================================================
+# Build asset: the exported app zip, named 'foundry', of the type of the asset
+# the platform matched to the scope. When the context carries another asset,
+# look it up in the build.
+# =============================================================================
+ASSET_NAME="foundry"
+ASSET_TYPE=$(ctx '.asset.type // .scope.capabilities.asset_type // "bundle"')
+ASSET_URL=""
+if [ "$BUILD_CONTEXT_MODE" != "deployment" ]; then
+	echo "   📋 Foundry app asset: skipped ($BUILD_CONTEXT_MODE mode)"
+else
+	build_id=$(ctx '.asset.build_id // .release.build_id // empty')
+
+	if ! [[ "$build_id" =~ ^[0-9]+$ ]]; then
+		{
+			echo "   ❌ The release has no build id"
+			echo "  💡 Possible causes:"
+			echo "    • The context carries no asset and the release is not linked to a build"
+			echo "  🔧 How to fix:"
+			echo "    • Create the release from a build whose CI registered the Foundry app as an asset named 'foundry'"
+		} >&2
+		exit 1
+	fi
+
+	asset=$(ctx -c --arg name "$ASSET_NAME" --arg type "$ASSET_TYPE" '.asset // {} | select(.name == $name and .type == $type) // empty')
+	if [ -z "$asset" ]; then
+		listed_assets='[]'
+		if listing=$(np asset list --build-id "$build_id" --format json 2>/dev/null) &&
+			listed_assets=$(echo "$listing" | jq -ec 'if type == "array" then . elif type == "object" and has("results") then .results else error("unexpected asset listing") end' 2>/dev/null); then
+			:
+		else
+			echo "   ⚠️ Could not list the assets of build $build_id (np asset list failed)"
+			listed_assets='[]'
+		fi
+		asset=$(echo "$listed_assets" | jq -c --arg name "$ASSET_NAME" --arg type "$ASSET_TYPE" \
+			'[.[] | select(.name == $name and .type == $type)] | first // empty')
+	fi
+
+	if [ -z "$asset" ]; then
+		{
+			echo "   ❌ No asset named '$ASSET_NAME' of type '$ASSET_TYPE' in release $RELEASE_SEMVER"
+			echo "  💡 Possible causes:"
+			echo "    • The CI did not export the Foundry app or registered it with another name"
+			echo "  🔧 How to fix:"
+			echo "    • Make the CI register the exported app zip as an asset named '$ASSET_NAME' (type $ASSET_TYPE) for this build"
+		} >&2
+		exit 1
+	fi
+
+	ASSET_URL=$(echo "$asset" | jq -r '.url // empty')
+	validate_asset_url "$ASSET_URL" || exit 1
+	echo "   ✅ $ASSET_NAME asset -> $ASSET_URL (type $ASSET_TYPE, build $build_id)"
+fi
+
+# =============================================================================
+# Profile variables: the environment parameters of the application, by
+# variable name. Only the names are printed.
+# =============================================================================
+PROFILE_VARS='{}'
+if [ "$BUILD_CONTEXT_MODE" != "deployment" ]; then
+	echo "   📋 Profile variables: skipped ($BUILD_CONTEXT_MODE mode)"
+else
+	# Values are read from stdin and never reach the argv of any process.
+	parameters_filter='(.parameters.results // [])[]
+		| select((.type // "environment") == "environment" and ((.values // []) | length) > 0)'
+	while IFS= read -r parameter_name; do
+		echo "   ⚠️ Skipping parameter '$parameter_name': not a valid variable name"
+	done < <(echo "$CONTEXT" | jq -r "$parameters_filter"' | (.variable // .name // "") | select(length > 0 and (test("^[A-Za-z_][A-Za-z0-9_]*$") | not))')
+	PROFILE_VARS=$(echo "$CONTEXT" | jq -c "[$parameters_filter"' | {key: (.variable // .name // ""), value: (.values[0].value | tostring)}
+		| select(.key | test("^[A-Za-z_][A-Za-z0-9_]*$"))] | from_entries')
+	profile_names=$(echo "$PROFILE_VARS" | jq -r 'keys | join(", ")')
+	echo "   📋 Profile variables: ${profile_names:-none}"
+fi
+
+# =============================================================================
+# Previous deployment: among the finalized deployments of this scope other
+# than the current one, the one still active in the scope (where a rollback
+# returns to); otherwise the most recent finalized one. Empty when there is
+# none or when the lookup fails (not an error).
+# =============================================================================
+PREVIOUS_DEPLOYMENT_ID=""
+PREVIOUS_RELEASE_SEMVER=""
+if [ "$BUILD_CONTEXT_MODE" = "scope" ]; then
+	echo "   📋 Previous deployment: skipped (scope mode)"
+else
+	previous_deployment=""
+	if deployments=$(np deployment list --scope-id "$SCOPE_ID" --all --max-pages 5 --format json 2>/dev/null) &&
+		previous_deployment=$(echo "$deployments" | jq -ec --arg current "$DEPLOYMENT_ID" '
+			(if type == "array" then . elif type == "object" and has("results") then .results else error("unexpected deployment listing") end)
+			| map(select(.status == "finalized" and (.id | tostring) != $current))
+			| (map(select(.status_in_scope == "active")) | first)
+				// (sort_by(.created_at // "", .id) | last)
+				// ""
+		' 2>/dev/null); then
+		:
+	else
+		echo "   ⚠️ Could not list the deployments of scope $SCOPE_ID; continuing without a previous deployment"
+		previous_deployment=""
+	fi
+
+	if [ -n "$previous_deployment" ] && [ "$previous_deployment" != '""' ]; then
+		PREVIOUS_DEPLOYMENT_ID=$(echo "$previous_deployment" | jq -r '.id')
+		previous_release_id=$(echo "$previous_deployment" | jq -r '.release_id // empty')
+		if [[ "$previous_release_id" =~ ^[0-9]+$ ]]; then
+			PREVIOUS_RELEASE_SEMVER=$(np release read --id "$previous_release_id" --format json 2>/dev/null | jq -r '.semver // empty' 2>/dev/null || true)
+		fi
+		if [ -n "$PREVIOUS_RELEASE_SEMVER" ] && ! is_semver "$PREVIOUS_RELEASE_SEMVER"; then
+			echo "   ⚠️ Ignoring the release of previous deployment $PREVIOUS_DEPLOYMENT_ID: '$PREVIOUS_RELEASE_SEMVER' is not a semantic version"
+			PREVIOUS_RELEASE_SEMVER=""
+		fi
+		echo "   📋 Previous deployment: $PREVIOUS_DEPLOYMENT_ID (release ${PREVIOUS_RELEASE_SEMVER:-unknown})"
+	else
+		echo "   📋 Previous deployment: none"
+	fi
+fi
+
+# =============================================================================
+# Workdir: scratch directory of this deployment. The base is kept apart so
+# that sourcing this script twice in the same session does not nest the path.
+# =============================================================================
+WORKDIR_BASE="${WORKDIR_BASE:-${WORKDIR:-/tmp/voltmx-foundry-app}}"
+if [ -n "$DEPLOYMENT_ID" ]; then
+	WORKDIR="$WORKDIR_BASE/$DEPLOYMENT_ID"
+	(umask 077 && mkdir -p "$WORKDIR") || exit 1
+else
+	(umask 077 && mkdir -p "$WORKDIR_BASE") || exit 1
+	WORKDIR=$(mktemp -d "$WORKDIR_BASE/scope-$SCOPE_ID-XXXXXX") || exit 1
+fi
+echo "   📋 Workdir: $WORKDIR"
+
+echo "✨ Build context ready"
+
+export BUILD_CONTEXT_MODE CONTEXT SCOPE_CONFIGURATION
+export FOUNDRY_APP APP_VERSION ASSET_TYPE ASSET_URL
+export ENVIRONMENT_NAME MFCLI_AUTH_ARGS CREDENTIALS_SECRET SECRETS_PREFIX ASSETS_BUCKET ASSETS_REGION PROFILE_VARS
+export RELEASE_SEMVER DEPLOYMENT_ID SCOPE_ID DIMENSION APPLICATION_SLUG NAMESPACE_SLUG SCOPE_SLUG
+export PREVIOUS_DEPLOYMENT_ID PREVIOUS_RELEASE_SEMVER
+export WORKDIR_BASE WORKDIR

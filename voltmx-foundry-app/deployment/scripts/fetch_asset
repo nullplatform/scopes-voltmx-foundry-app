@@ -1,0 +1,114 @@
+#!/bin/bash
+# =============================================================================
+# Fetch the Foundry app
+#
+# Downloads ASSET_URL (only from ASSETS_BUCKET, see validators) to
+# $WORKDIR/foundry.zip, checks that it is a zip and that it is the export of
+# FOUNDRY_APP version APP_VERSION, and exports FOUNDRY_ZIP.
+#
+# Import -a/-v would override what the zip says, so a zip of another app (or
+# another version) would be imported under this app's name. The zip must
+# carry exactly one Apps/<app>/Meta.json with {"name", "version"} matching the
+# scope's app and the release semver; a zip without it is refused. That layout
+# is the one the mfcli mock exports and is an assumption until D1.
+# Sourced by the workflow: returns 1 on failure, never exits.
+# =============================================================================
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/validators
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/validators"
+
+verify_zip_identity() {
+	local zip="$1" meta_paths count meta_path meta meta_name meta_version dir_name
+	meta_paths=$(unzip -Z1 "$zip" 2>/dev/null | grep -E '^Apps/[^/]+/Meta\.json$' || true)
+	count=$(printf '%s' "$meta_paths" | grep -c . || true)
+
+	if [ "$count" -eq 0 ]; then
+		{
+			echo "   ❌ The Foundry app zip has no Apps/<app>/Meta.json: cannot check that it is app '$FOUNDRY_APP' version ${APP_VERSION:-}"
+			echo "  💡 Possible causes:"
+			echo "    • The CI registered a zip that is not a Foundry app export"
+			echo "  🔧 How to fix:"
+			echo "    • Export the app with mfcli Export (or from the Foundry console) and register that zip as the 'foundry' asset"
+		} >&2
+		return 1
+	fi
+	if [ "$count" -gt 1 ]; then
+		{
+			echo "   ❌ The Foundry app zip carries more than one app ($(printf '%s' "$meta_paths" | cut -d/ -f2 | paste -sd, - | sed 's/,/, /g'))"
+			echo "  🔧 How to fix:"
+			echo "    • Register the export of '$FOUNDRY_APP' alone as the 'foundry' asset"
+		} >&2
+		return 1
+	fi
+
+	meta_path="$meta_paths"
+	dir_name=$(printf '%s' "$meta_path" | cut -d/ -f2)
+	meta=$(unzip -p "$zip" "$meta_path" 2>/dev/null || true)
+	meta_name=$(printf '%s' "$meta" | jq -r 'select(type == "object") | .name // empty' 2>/dev/null || true)
+	meta_version=$(printf '%s' "$meta" | jq -r 'select(type == "object") | .version // empty' 2>/dev/null || true)
+
+	if [ -z "${APP_VERSION:-}" ] || [ "$meta_name" != "$FOUNDRY_APP" ] || [ "$dir_name" != "$FOUNDRY_APP" ] || [ "$meta_version" != "${APP_VERSION:-}" ]; then
+		{
+			echo "   ❌ The zip is app '${meta_name:-$dir_name}' version '${meta_version:-unknown}', but this deployment publishes app '$FOUNDRY_APP' version ${APP_VERSION:-(unknown)}"
+			echo "  💡 Possible causes:"
+			echo "    • The CI registered the export of another app or another version as the 'foundry' asset of this release"
+			echo "  🔧 How to fix:"
+			echo "    • Register the export of '$FOUNDRY_APP' version ${APP_VERSION:-<release semver>} (the release semver) as the 'foundry' asset of this build"
+		} >&2
+		return 1
+	fi
+	echo "   ✅ Zip contents: app $meta_name version $meta_version ($meta_path)"
+}
+
+fetch_asset() {
+	local script_dir destination
+	script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+	if [ -z "${ASSET_URL:-}" ] || [ -z "${WORKDIR:-}" ]; then
+		{
+			echo "   ❌ ASSET_URL or WORKDIR is not set"
+			echo "  🔧 How to fix:"
+			echo "    • Run the deployment workflow from the start so build_context resolves the asset"
+		} >&2
+		return 1
+	fi
+
+	validate_asset_url "$ASSET_URL" || return 1
+
+	destination="$WORKDIR/foundry.zip"
+	echo "📡 Downloading the Foundry app from $ASSET_URL..."
+	rm -f "$destination"
+	if ! bash "$script_dir/download_asset" "$ASSET_URL" "$destination" >/dev/null; then
+		{
+			echo "   ❌ Could not download the Foundry app from $ASSET_URL"
+			echo "  💡 Possible causes:"
+			echo "    • The object does not exist or the agent role cannot read the bucket $ASSETS_BUCKET"
+			echo "  🔧 How to fix:"
+			echo "    • Check that the CI uploaded the app and that the agent role has s3:GetObject on $ASSETS_BUCKET"
+		} >&2
+		return 1
+	fi
+
+	if ! unzip -tq "$destination" >/dev/null 2>&1; then
+		{
+			echo "   ❌ The asset $ASSET_URL is not a zip file"
+			echo "  💡 Possible causes:"
+			echo "    • The CI registered something other than the app exported from Foundry (Export or the Iris publish zip)"
+			echo "  🔧 How to fix:"
+			echo "    • Register the zip produced by exporting the Foundry app as the 'foundry' asset"
+		} >&2
+		return 1
+	fi
+
+	verify_zip_identity "$destination" || { rm -f "$destination"; return 1; }
+
+	FOUNDRY_ZIP="$destination"
+	export FOUNDRY_ZIP
+	echo "   ✅ Foundry app downloaded to $FOUNDRY_ZIP"
+}
+
+fetch_asset
+fetch_asset_status=$?
+unset -f fetch_asset verify_zip_identity
+# shellcheck disable=SC2317
+return "$fetch_asset_status" 2>/dev/null || exit "$fetch_asset_status"
