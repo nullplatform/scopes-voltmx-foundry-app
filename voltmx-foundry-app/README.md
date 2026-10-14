@@ -12,8 +12,10 @@ environment with the Foundry CLI (`mfcli`).
 | Operator | `values.yaml` | `MFCLI_CMD`, `PUBLISH_TIMEOUT_SECONDS`, `PUBLISH_POLL_SECONDS`, `MFCLI_CALL_TIMEOUT_SECONDS`, `WORKDIR` |
 
 The scope configuration also takes an optional `mfcli.command` ("Foundry CLI (testing)") that replaces `MFCLI_CMD` for
-its scopes: it is how the POC points the scopes at the mock shipped in the worker image
-(`/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli`). Leave it empty with a real Foundry.
+its scopes, and the only value `build_context` accepts is the mock shipped in the worker image, exactly
+`/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli` (one word, no arguments, compared by resolved path): whatever runs as
+`MFCLI_CMD` sees the Foundry credentials and the parameter values, so no other command can be configured. A real Foundry
+mounts or bakes `mfcli.jar` at `$MFCLI_JAR` and leaves `mfcli.command` empty.
 
 The CI exports the app from Foundry, uploads the zip to the assets bucket and registers it as an asset named
 `foundry` (type `bundle`) of the build. The release semver is the Foundry app version.

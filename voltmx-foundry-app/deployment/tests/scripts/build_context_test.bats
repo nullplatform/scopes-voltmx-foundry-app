@@ -51,7 +51,7 @@ run_build_context() {
 }
 
 with_context() {
-	CONTEXT=$(echo "$CONTEXT" | jq "$1")
+	CONTEXT=$(echo "$CONTEXT" | jq "$@")
 	export CONTEXT
 }
 
@@ -807,20 +807,20 @@ scope_context() {
 }
 
 # =============================================================================
-# mfcli.command: the scope configuration points MFCLI_CMD at a mock (testing)
+# mfcli.command: only the bundled mock may replace the Foundry CLI (testing)
 # =============================================================================
-@test "Should let the scope configuration replace the Foundry CLI with a mock (mfcli.command)" {
+@test "Should let the scope configuration replace the Foundry CLI with the bundled mock (mfcli.command)" {
 	use_context_configuration
-	with_context '.providers["scope-configurations"].mfcli = {command: "/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli"}'
+	with_context --arg mock "$SCOPE_DIR/tools/mfcli-mock/mfcli" '.providers["scope-configurations"].mfcli = {command: $mock}'
 	export MFCLI_CMD="java -jar /opt/mfcli/mfcli.jar"
 
 	run source "$SCRIPT"
 	assert_equal "$status" "0"
-	assert_line "   ⚠️ mfcli.command of the scope configuration replaces the Foundry CLI: /app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli (meant for testing with a mock)"
+	assert_line "   ⚠️ mfcli.command of the scope configuration replaces the Foundry CLI with the bundled mock: $(realpath "$SCOPE_DIR/tools/mfcli-mock/mfcli") (testing only)"
 
 	run_build_context
-	assert_equal "$MFCLI_CMD" "/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli"
-	assert_equal "$(bash -c 'echo "$MFCLI_CMD"')" "/app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli"
+	assert_equal "$MFCLI_CMD" "$(realpath "$SCOPE_DIR/tools/mfcli-mock/mfcli")"
+	assert_equal "$(bash -c 'echo "$MFCLI_CMD"')" "$(realpath "$SCOPE_DIR/tools/mfcli-mock/mfcli")"
 }
 
 @test "Should keep MFCLI_CMD from values.yaml when the scope configuration sets no mfcli.command" {
@@ -834,16 +834,58 @@ scope_context() {
 	assert_equal "$MFCLI_CMD" "java -jar /opt/mfcli/mfcli.jar"
 }
 
-@test "Should reject an mfcli.command with shell syntax" {
+@test "Should reject every mfcli.command that is not exactly the bundled mock" {
 	use_context_configuration
-	local command
-	for command in 'mfcli; rm -rf /' '$(curl x)' 'java -jar a.jar | tee' 'java -jar "a b.jar"'; do
+	export MFCLI_CMD="java -jar /opt/mfcli/mfcli.jar"
+	local mock="$SCOPE_DIR/tools/mfcli-mock/mfcli" command reason
+	while IFS='|' read -r command reason; do
 		CONTEXT=$(echo "$CONTEXT" | jq --arg c "$command" '.providers["scope-configurations"].mfcli.command = $c')
 		export CONTEXT
 
 		run source "$SCRIPT"
 
 		assert_equal "$status" "1"
-		assert_line "   ❌ Invalid mfcli.command '$command': a command line of plain words (letters, digits and / . _ - = :), no shell syntax"
+		assert_line "   ❌ Invalid mfcli.command '$command': $reason"
+		assert_line "    • The only allowed override is the bundled mock, $mock (one word, no arguments)"
+		assert_line "    • A real Foundry mounts or bakes mfcli.jar at \$MFCLI_JAR and keeps the default java -jar \$MFCLI_JAR of values.yaml: remove mfcli.command"
+		refute_line "✨ Build context ready"
+	done <<-CASES
+		sh -c env|it carries arguments, spaces or control characters
+		env JAVA_TOOL_OPTIONS=-Dx java -jar /opt/mfcli/mfcli.jar|it carries arguments, spaces or control characters
+		$mock --verbose|it carries arguments, spaces or control characters
+		/bin/sh|it is not the bundled mock
+		java|it is not the absolute path of the bundled mock
+		tools/mfcli-mock/mfcli|it is not the absolute path of the bundled mock
+		$SCOPE_DIR/tools/mfcli-mock/../mfcli-mock/mfcli|it is not the absolute path of the bundled mock
+		$SCOPE_DIR/tools/mfcli-mock/README.md|it is not the bundled mock
+	CASES
+}
+
+@test "Should reject an mfcli.command with a newline, a tab or a control character" {
+	use_context_configuration
+	local mock="$SCOPE_DIR/tools/mfcli-mock/mfcli" command
+	for command in $'mfcli\ntouch /x' $'mfcli\ttouch /x' $'mfcli\rtouch /x' $"$mock"$'\x01'; do
+		CONTEXT=$(echo "$CONTEXT" | jq --arg c "$command" '.providers["scope-configurations"].mfcli.command = $c')
+		export CONTEXT
+
+		run source "$SCRIPT"
+
+		assert_equal "$status" "1"
+		[[ "$output" == *"❌ Invalid mfcli.command '"*"': it carries arguments, spaces or control characters"* ]]
+		refute_line "✨ Build context ready"
 	done
+}
+
+@test "Should leave the shell options of the workflow shell as they were" {
+	run bash -c 'set +e +u +o pipefail; source "$0" >/dev/null 2>&1 || exit 9; printf "%s:%s" "$-" "$SHELLOPTS"' "$SCRIPT"
+	assert_equal "$status" "0"
+	[[ "${output%%:*}" != *e* ]]
+	[[ "${output%%:*}" != *u* ]]
+	[[ ":${output#*:}:" != *:pipefail:* ]]
+
+	run bash -c 'set -euo pipefail; source "$0" >/dev/null 2>&1; printf "%s:%s" "$-" "$SHELLOPTS"' "$SCRIPT"
+	assert_equal "$status" "0"
+	[[ "${output%%:*}" == *e* ]]
+	[[ "${output%%:*}" == *u* ]]
+	[[ ":${output#*:}:" == *:pipefail:* ]]
 }

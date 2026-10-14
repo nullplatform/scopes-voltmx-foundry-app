@@ -35,7 +35,7 @@
 #   SECRETS_PREFIX          secrets_prefix of the scope configuration, else voltmx/<namespace slug>/
 #   ASSETS_BUCKET, ASSETS_REGION
 #   SCOPE_CONFIGURATION     the whole 'Volt MX Foundry app' scope configuration (JSON)
-#   MFCLI_CMD               only when the scope configuration sets mfcli.command (testing with a mock)
+#   MFCLI_CMD               only when the scope configuration sets mfcli.command (the bundled mock, testing only)
 #   PROFILE_VARS            {"<variable>": "<value>"} from .parameters.results (never printed)
 #   PREVIOUS_DEPLOYMENT_ID, PREVIOUS_RELEASE_SEMVER  finalized deployment still
 #                           active in the scope, else the most recent finalized one
@@ -55,6 +55,12 @@
 # Parameter values and the scope configuration are never printed.
 # =============================================================================
 
+# Sourced in the workflow shell: the options set here are restored at the end
+# (errexit and nounset would alter the steps and the diagnose executor that
+# follow this one in the same shell).
+build_context_shell_options="$-"
+build_context_pipefail=0
+[[ ":$SHELLOPTS:" == *:pipefail:* ]] && build_context_pipefail=1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -255,9 +261,8 @@ ASSETS_REGION=$(get_config_value --provider "$config_path.assets.region" --env A
 app_name_prefix=$(get_config_value --provider "$config_path.app_name_prefix" --env FOUNDRY_APP_NAME_PREFIX)
 configured_secrets_prefix=$(get_config_value --provider "$config_path.secrets_prefix" --env SECRETS_PREFIX)
 # mfcli.command replaces MFCLI_CMD (values.yaml) for the scopes of this
-# configuration: meant for testing with a mock of the Foundry CLI, such as
-# tools/mfcli-mock/mfcli shipped with the worker image. mfcli_run splits it on
-# spaces, so it is a command line of plain words: no shell syntax.
+# configuration, and only with the mock shipped with the worker image
+# (tools/mfcli-mock/mfcli): checked below.
 configured_mfcli_command=$(get_config_value --provider "$config_path.mfcli.command")
 # allowed_apps is a JSON array in the scope configuration, a comma separated
 # list in FOUNDRY_ALLOWED_APPS.
@@ -439,19 +444,37 @@ if [ -n "$app_name_prefix" ]; then
 fi
 
 if [ -n "$configured_mfcli_command" ]; then
-	if ! [[ "$configured_mfcli_command" =~ ^[A-Za-z0-9_./=:-]+([[:space:]]+[A-Za-z0-9_./=:-]+)*$ ]]; then
+	# Hard allowlist: whatever runs as MFCLI_CMD sees the credentials and the
+	# parameter values of the deployment, so the only override accepted is the
+	# mock shipped with the scope, as one word with no arguments, compared by
+	# resolved path. A real Foundry never sets mfcli.command.
+	allowed_mfcli_mock="${SERVICE_PATH:-}/tools/mfcli-mock/mfcli"
+	fail_mfcli_command() {
 		{
-			echo "   ❌ Invalid mfcli.command '$configured_mfcli_command': a command line of plain words (letters, digits and / . _ - = :), no shell syntax"
+			echo "   ❌ Invalid mfcli.command '$configured_mfcli_command': $1"
 			echo "  💡 Possible causes:"
-			echo "    • mfcli.command of the 'Volt MX Foundry app' scope configuration carries quotes, variables or shell operators"
+			echo "    • mfcli.command of the 'Volt MX Foundry app' scope configuration is not the mock shipped with the scope"
 			echo "  🔧 How to fix:"
-			echo "    • Set mfcli.command to the command alone (e.g. /app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli), or remove it to run the Foundry CLI of values.yaml"
+			echo "    • The only allowed override is the bundled mock, $allowed_mfcli_mock (one word, no arguments)"
+			echo "    • A real Foundry mounts or bakes mfcli.jar at \$MFCLI_JAR and keeps the default java -jar \$MFCLI_JAR of values.yaml: remove mfcli.command"
 		} >&2
 		exit 1
+	}
+	# The raw value, never split: a newline or any control character is an argument in disguise.
+	if [[ "$configured_mfcli_command" =~ [[:space:][:cntrl:]] ]]; then
+		fail_mfcli_command "it carries arguments, spaces or control characters"
 	fi
-	MFCLI_CMD="$configured_mfcli_command"
+	if [[ "$configured_mfcli_command" != /* ]] || [[ "$configured_mfcli_command" == *..* ]]; then
+		fail_mfcli_command "it is not the absolute path of the bundled mock"
+	fi
+	configured_mfcli_real=$(realpath "$configured_mfcli_command" 2>/dev/null || true)
+	allowed_mfcli_real=$(realpath "$allowed_mfcli_mock" 2>/dev/null || true)
+	if [ -z "$allowed_mfcli_real" ] || [ ! -x "$allowed_mfcli_real" ] || [ "$configured_mfcli_real" != "$allowed_mfcli_real" ]; then
+		fail_mfcli_command "it is not the bundled mock"
+	fi
+	MFCLI_CMD="$allowed_mfcli_real"
 	export MFCLI_CMD
-	echo "   ⚠️ mfcli.command of the scope configuration replaces the Foundry CLI: $MFCLI_CMD (meant for testing with a mock)"
+	echo "   ⚠️ mfcli.command of the scope configuration replaces the Foundry CLI with the bundled mock: $MFCLI_CMD (testing only)"
 fi
 
 if [ -z "$SCOPE_CONFIGURATION" ]; then
@@ -603,6 +626,10 @@ fi
 echo "   📋 Workdir: $WORKDIR"
 
 echo "✨ Build context ready"
+
+[[ "$build_context_shell_options" == *e* ]] || set +e
+[[ "$build_context_shell_options" == *u* ]] || set +u
+[ "$build_context_pipefail" = "1" ] || set +o pipefail
 
 export BUILD_CONTEXT_MODE CONTEXT SCOPE_CONFIGURATION
 export FOUNDRY_APP APP_VERSION ASSET_TYPE ASSET_URL

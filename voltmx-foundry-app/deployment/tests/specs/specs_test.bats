@@ -147,8 +147,9 @@ assert_ui_scopes_resolve() {
 	assert_equal "$(echo "$mfcli" | jq -r .type)" "object"
 	assert_equal "$(echo "$mfcli" | jq -c '.required // []')" "[]"
 	assert_equal "$(echo "$mfcli" | jq -r .properties.command.type)" "string"
-	assert_equal "$(echo "$mfcli" | jq -r .properties.command.pattern)" '^[A-Za-z0-9_./=:-]+( +[A-Za-z0-9_./=:-]+)*$'
+	assert_equal "$(echo "$mfcli" | jq -r .properties.command.pattern)" '^/[A-Za-z0-9_./-]+/tools/mfcli-mock/mfcli$'
 	assert_contains "$(echo "$mfcli" | jq -r .description)" "testing with a mock"
+	assert_contains "$(echo "$mfcli" | jq -r .properties.command.description)" "The only accepted value is the mock shipped with the scope"
 }
 
 @test "Scope configuration binds apps and secrets to the namespace (multi-tenant Foundry environments)" {

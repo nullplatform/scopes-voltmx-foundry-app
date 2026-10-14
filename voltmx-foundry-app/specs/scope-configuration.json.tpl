@@ -109,8 +109,8 @@
           "command": {
             "type": "string",
             "title": "mfcli command",
-            "description": "Command line that replaces MFCLI_CMD for the scopes of this configuration, e.g. /app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli. Plain words only, no shell syntax.",
-            "pattern": "^[A-Za-z0-9_./=:-]+( +[A-Za-z0-9_./=:-]+)*$"
+            "description": "Replaces MFCLI_CMD for the scopes of this configuration. The only accepted value is the mock shipped with the scope, /app/pkg/voltmx-foundry-app/tools/mfcli-mock/mfcli (one word, no arguments); anything else fails every action. A real Foundry mounts or bakes mfcli.jar and leaves this empty.",
+            "pattern": "^/[A-Za-z0-9_./-]+/tools/mfcli-mock/mfcli$"
           }
         }
       },
