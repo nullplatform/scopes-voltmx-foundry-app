@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.0...v0.1.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **voltmx-foundry-app:** shorten the spec descriptions to the platform limits ([99b2595](https://github.com/nullplatform/scopes-voltmx-foundry-app/commit/99b25956028c1d2dc91f3437b9acc566cd7503b6))
+
 ## 0.1.0 (2026-10-14)
 
 
