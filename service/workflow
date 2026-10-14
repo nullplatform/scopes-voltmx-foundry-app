@@ -1,23 +1,36 @@
 #!/bin/bash
 # Sourced by the handlers: runs <entity>/workflows/<action>.yaml with each override directory's copy layered on top.
 
+# Sets WORKFLOW_OVERRIDES to the --overrides arguments for <entity>/workflows/<action>.yaml.
+workflow_overrides() {
+  local entity="$1" action="$2" dirs=() dir
+  WORKFLOW_OVERRIDES=()
+  IFS=',' read -ra dirs <<< "${OVERRIDES_PATH:-}"
+  for dir in ${dirs[@]+"${dirs[@]}"}; do
+    if [ -f "$dir/$entity/workflows/$action.yaml" ]; then
+      WORKFLOW_OVERRIDES+=(--overrides "$dir/$entity/workflows/$action.yaml")
+    fi
+  done
+}
+
 run_workflow() {
   local entity="$1" action="$2"
   local workflow="$SERVICE_PATH/$entity/workflows/$action.yaml"
-  local overrides=() dirs=() dir
+
+  # The action becomes a path segment: a slug like ../../instance/workflows/list
+  # must never select a workflow outside <entity>/workflows.
+  if ! [[ "$action" =~ ^[a-z0-9_-]+$ ]]; then
+    echo "Invalid $entity action '$action' (slug=$SERVICE_ACTION type=$SERVICE_ACTION_TYPE): only lowercase letters, digits, dashes and underscores are allowed" >&2
+    exit 1
+  fi
 
   if [ ! -f "$workflow" ]; then
     echo "No workflow for $entity action '$action' (slug=$SERVICE_ACTION type=$SERVICE_ACTION_TYPE): expected $workflow" >&2
     exit 1
   fi
 
-  IFS=',' read -ra dirs <<< "$OVERRIDES_PATH"
-  for dir in ${dirs[@]+"${dirs[@]}"}; do
-    if [ -f "$dir/$entity/workflows/$action.yaml" ]; then
-      overrides+=(--overrides "$dir/$entity/workflows/$action.yaml")
-    fi
-  done
+  workflow_overrides "$entity" "$action"
 
   echo "Executing $entity workflow $action.yaml for scope=$SCOPE_ID deployment=${DEPLOYMENT_ID:-none}"
-  np service workflow exec --workflow "$workflow" --build-context --include-secrets ${overrides[@]+"${overrides[@]}"}
+  np service workflow exec --workflow "$workflow" --build-context --include-secrets ${WORKFLOW_OVERRIDES[@]+"${WORKFLOW_OVERRIDES[@]}"}
 }

@@ -1,0 +1,15 @@
+#!/bin/bash
+# =============================================================================
+# First step of the instance workflow: keep stdout for the JSON answer
+#
+# instance:data answers on stdout and the agent parses it as JSON, but every
+# workflow step is sourced in the same shell and logs to stdout. This step
+# keeps the real stdout on fd 3 and sends stdout to stderr for the rest of
+# the workflow; instance/scripts/list writes the answer to fd 3
+# (VOLTMX_FOUNDRY_APP_ANSWER_FD).
+# =============================================================================
+
+exec 3>&1 1>&2
+# Read by instance/scripts/list (same shell): fd 3 is the answer.
+# shellcheck disable=SC2034
+VOLTMX_FOUNDRY_APP_ANSWER_FD=3

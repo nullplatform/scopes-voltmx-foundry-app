@@ -1,6 +1,121 @@
+# start-initial: import the exported Foundry app of the release, render and
+# apply the service profile (the application parameters) and publish the
+# version to the Foundry environment of the scope configuration.
+#
+# How the engine runs it: np service workflow exec builds ONE `bash -c` that
+# sources every step, joined by &&. So:
+#   - what a step exports reaches the next steps; `output:` is informative
+#     only (the engine ignores it; deployment/tests/workflows checks it);
+#   - the first step whose `source` returns non-zero stops the workflow;
+#   - `set -e` does not apply inside a step chained with && (only inside the
+#     last one), so the scripts check every failure explicitly;
+#   - a step's `configuration` applies to that step only: the engine prefixes
+#     the `source` with KEY=value assignments, which the child shells of the
+#     step inherit;
+#   - the environment of the worker wins over the `configuration` of values.yaml.
+# build_context, fetch_asset and read_credentials export variables, so they run
+# in that shell; every other step re-runs itself in a child shell when sourced,
+# so its exit codes, traps and shell options never end or alter the chain.
 include:
   - "$SERVICE_PATH/values.yaml"
 steps:
-  - name: example
+  - name: assume role
     type: script
-    file: "$SERVICE_PATH/scripts/example"
+    file: "$SERVICE_PATH/utils/assume_role_step"
+    output:
+      - name: AWS_ACCESS_KEY_ID
+        type: environment
+      - name: AWS_SECRET_ACCESS_KEY
+        type: environment
+      - name: AWS_SESSION_TOKEN
+        type: environment
+  - name: build context
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/build_context"
+    output:
+      - name: CONTEXT
+        type: environment
+      - name: SCOPE_CONFIGURATION
+        type: environment
+      - name: FOUNDRY_APP
+        type: environment
+      - name: APP_VERSION
+        type: environment
+      - name: ASSET_TYPE
+        type: environment
+      - name: ASSET_URL
+        type: environment
+      - name: ENVIRONMENT_NAME
+        type: environment
+      - name: MFCLI_AUTH_ARGS
+        type: environment
+      - name: MFCLI_CMD
+        type: environment
+      - name: CREDENTIALS_SECRET
+        type: environment
+      - name: SECRETS_PREFIX
+        type: environment
+      - name: ASSETS_BUCKET
+        type: environment
+      - name: ASSETS_REGION
+        type: environment
+      - name: ASSETS_PREFIX
+        type: environment
+      - name: PROFILE_VARS
+        type: environment
+      - name: RELEASE_SEMVER
+        type: environment
+      - name: DEPLOYMENT_ID
+        type: environment
+      - name: SCOPE_ID
+        type: environment
+      - name: DIMENSION
+        type: environment
+      - name: APPLICATION_SLUG
+        type: environment
+      - name: NAMESPACE_SLUG
+        type: environment
+      - name: SCOPE_SLUG
+        type: environment
+      - name: PREVIOUS_DEPLOYMENT_ID
+        type: environment
+      - name: PREVIOUS_RELEASE_SEMVER
+        type: environment
+      - name: WORKDIR_BASE
+        type: environment
+      - name: WORKDIR
+        type: environment
+  - name: fetch asset
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/fetch_asset"
+    output:
+      - name: FOUNDRY_ZIP
+        type: environment
+  - name: read credentials
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/read_credentials"
+    output:
+      - name: MFCLI_USER
+        type: environment
+      - name: MFCLI_PASSWORD
+        type: environment
+  - name: import
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/do_import"
+  # Rendered right before it is applied (never earlier): the profile carries
+  # parameter values, and apply profile deletes it whatever the outcome.
+  - name: render profile
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/render_profile"
+  - name: apply profile
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/do_reconfig"
+  - name: publish
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/do_publish"
+  - name: wait publish
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/wait_publish"
+  - name: export outputs
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/export_outputs"

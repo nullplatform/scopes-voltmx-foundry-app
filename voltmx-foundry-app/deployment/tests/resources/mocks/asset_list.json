@@ -1,0 +1,25 @@
+{
+  "results": [
+    {
+      "id": 22,
+      "build_id": 30,
+      "name": "foundry",
+      "type": "docker-image",
+      "url": "s3://assets-aws-mobile/foundry/442353700/30/wrong-type.zip"
+    },
+    {
+      "id": 21,
+      "build_id": 30,
+      "name": "foundry",
+      "type": "bundle",
+      "url": "s3://assets-aws-mobile/foundry/442353700/30/PetStore.zip"
+    },
+    {
+      "id": 23,
+      "build_id": 30,
+      "name": "web",
+      "type": "bundle",
+      "url": "s3://assets-aws-mobile/web/442353700/30/site.zip"
+    }
+  ]
+}

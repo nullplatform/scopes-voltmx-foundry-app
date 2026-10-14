@@ -1,5 +1,5 @@
 {
-  "name": "VoltMX Foundry app",
+  "name": "Volt MX Foundry app",
   "type": "scope",
   "assignable_to": "any",
   "use_default_actions": false,
@@ -8,11 +8,9 @@
     "update-scope",
     "delete-scope",
     "start-initial",
-    "start-blue-green",
-    "switch-traffic",
-    "finalize-blue-green",
     "rollback-deployment",
-    "delete-deployment"
+    "delete-deployment",
+    "diagnose-scope"
   ],
   "visible_to": [
     "{{ env.Getenv "NRN" }}"
@@ -21,27 +19,33 @@
     "category": "Scope",
     "imported": false,
     "provider": "Agent",
-    "sub_category": "VoltMX Foundry app"
+    "sub_category": "Volt MX Foundry app"
   },
   "dimensions": {},
   "scopes": {},
   "attributes": {
     "schema": {
       "type": "object",
-      "required": ["example"],
+      "required": ["foundry_app_name"],
       "properties": {
-        "example": {
+        "asset_type": {
           "type": "string",
-          "title": "Example",
-          "description": "Replace with the capabilities developers choose, in their words, not the cloud's",
-          "default": "",
-          "editableOn": ["create", "update"]
+          "default": "bundle",
+          "export": false,
+          "description": "Asset type this scope deploys. The exported Foundry app zip is registered as a bundle asset named foundry"
+        },
+        "foundry_app_name": {
+          "type": "string",
+          "title": "Foundry app name",
+          "description": "Name of the app in Foundry, exactly as it appears in the console (e.g. PetStore). Each deployment publishes the release version of this app.",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "editableOn": ["create"]
         }
       },
       "uiSchema": {
         "type": "VerticalLayout",
         "elements": [
-          { "type": "Control", "scope": "#/properties/example" }
+          { "type": "Control", "scope": "#/properties/foundry_app_name" }
         ]
       }
     },

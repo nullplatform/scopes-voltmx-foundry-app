@@ -1,6 +1,60 @@
+# update-scope: check, before any deployment needs them, that the 'Volt MX
+# Foundry app' scope configuration resolves for this scope and is complete,
+# that the app of the scope is one this namespace or dimension may deploy
+# (allowed_apps / app_name_prefix), that the auth mode is cloud or on-premises
+# (not both), that credentials_secret lives under the secrets prefix of the
+# namespace, and that the agent can read it and it has the expected shape.
+# Nothing is called in Foundry: that is what diagnose-scope is for.
 include:
   - "$SERVICE_PATH/values.yaml"
 steps:
-  - name: example
+  - name: assume role
     type: script
-    file: "$SERVICE_PATH/scripts/example"
+    file: "$SERVICE_PATH/utils/assume_role_step"
+    output:
+      - name: AWS_ACCESS_KEY_ID
+        type: environment
+      - name: AWS_SECRET_ACCESS_KEY
+        type: environment
+      - name: AWS_SESSION_TOKEN
+        type: environment
+  - name: build context
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/build_context"
+    configuration:
+      BUILD_CONTEXT_MODE: scope
+    output:
+      - name: CONTEXT
+        type: environment
+      - name: SCOPE_CONFIGURATION
+        type: environment
+      - name: FOUNDRY_APP
+        type: environment
+      - name: ENVIRONMENT_NAME
+        type: environment
+      - name: MFCLI_AUTH_ARGS
+        type: environment
+      - name: MFCLI_CMD
+        type: environment
+      - name: CREDENTIALS_SECRET
+        type: environment
+      - name: SECRETS_PREFIX
+        type: environment
+      - name: ASSETS_BUCKET
+        type: environment
+      - name: ASSETS_REGION
+        type: environment
+      - name: SCOPE_ID
+        type: environment
+      - name: WORKDIR_BASE
+        type: environment
+      - name: WORKDIR
+        type: environment
+  - name: read credentials
+    type: script
+    file: "$SERVICE_PATH/deployment/scripts/read_credentials"
+    output:
+      - name: MFCLI_USER
+        type: environment
+      - name: MFCLI_PASSWORD
+        type: environment

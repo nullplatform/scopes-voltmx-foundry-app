@@ -1,0 +1,4 @@
+#!/bin/bash
+# Executor before_each: mark the check that is about to run as running.
+
+update_check_result --status "running" --evidence "{}"

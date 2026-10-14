@@ -1,0 +1,95 @@
+#!/bin/bash
+# =============================================================================
+# Mock np CLI for the BATS tests. Put this directory first on PATH.
+#
+# Each subcommand answers with the JSON file named by its own variable, so a
+# script that calls np several times gets a different answer per call:
+#
+#   NP_MOCK_SPECIFICATION_LIST            np provider specification list
+#   NP_MOCK_PROVIDER_LIST                 np provider list (without --dimensions)
+#   NP_MOCK_PROVIDER_LIST_WITH_DIMENSIONS np provider list --dimensions ...
+#                                         (falls back to NP_MOCK_PROVIDER_LIST)
+#   NP_MOCK_ASSET_LIST                    np asset list
+#   NP_MOCK_DEPLOYMENT_LIST               np deployment list
+#   NP_MOCK_RELEASE_READ                  np release read
+#   NP_MOCK_RELEASE_READ_DIR              np release read --id <id>: <dir>/<id>.json when it
+#                                         exists (falls back to NP_MOCK_RELEASE_READ)
+#   NP_MOCK_RELEASE_LIST                  np release list
+#   NP_MOCK_DEPLOYMENT_PATCH              np deployment patch
+#   NP_MOCK_ACTION_PATCH                  np service action patch (diagnose results)
+#
+# A subcommand without a file configured behaves like the real CLI on an
+# error: prints {"error": ...} on stdout and exits 1. NP_MOCK_EXIT_CODE
+# overrides the exit code of every answer.
+#
+# When NP_MOCK_CALLS_LOG is set every invocation is appended to that file as
+# "np <args>", so tests can assert which commands ran (and with which flags).
+# =============================================================================
+
+if [ -n "${NP_MOCK_CALLS_LOG:-}" ]; then
+  echo "np $*" >> "$NP_MOCK_CALLS_LOG"
+fi
+
+answer() {
+  local file="$1"
+  if [ -z "$file" ]; then
+    echo "{\"error\": \"no mock response configured for: np $*\"}"
+    exit 1
+  fi
+  if [ ! -f "$file" ]; then
+    echo "{\"error\": \"mock file not found: $file\"}"
+    exit 1
+  fi
+  cat "$file"
+  exit "${NP_MOCK_EXIT_CODE:-0}"
+}
+
+case "$*" in
+  *"provider specification list"*)
+    # The real CLI returns nothing without an --nrn.
+    case "$*" in
+      *--nrn*) answer "${NP_MOCK_SPECIFICATION_LIST:-}" ;;
+      *) echo '{"results":[]}'; exit 0 ;;
+    esac
+    ;;
+  *"provider list"*)
+    case "$*" in
+      *--dimensions*) answer "${NP_MOCK_PROVIDER_LIST_WITH_DIMENSIONS:-${NP_MOCK_PROVIDER_LIST:-}}" ;;
+      *) answer "${NP_MOCK_PROVIDER_LIST:-}" ;;
+    esac
+    ;;
+  *"asset list"*) answer "${NP_MOCK_ASSET_LIST:-}" ;;
+  *"deployment list"*)
+    # Like the real CLI (v2.10.1), an unknown flag (e.g. --scope_id) is an error.
+    for arg in "$@"; do
+      case "$arg" in
+        --*)
+          case "${arg%%=*}" in
+            --scope-id|--application-id|--status-in-scope|--limit|--offset|--all|--max-pages|--include-messages|--format|--query) ;;
+            *) echo "{\"error\": \"unknown flag: $arg\"}"; exit 1 ;;
+          esac
+          ;;
+      esac
+    done
+    answer "${NP_MOCK_DEPLOYMENT_LIST:-}"
+    ;;
+  *"deployment patch"*) answer "${NP_MOCK_DEPLOYMENT_PATCH:-}" ;;
+  *"service action patch"*) answer "${NP_MOCK_ACTION_PATCH:-}" ;;
+  *"release read"*)
+    release_id=""
+    previous=""
+    for arg in "$@"; do
+      [ "$previous" = "--id" ] && release_id="$arg"
+      previous="$arg"
+    done
+    if [ -n "${NP_MOCK_RELEASE_READ_DIR:-}" ] && [ -n "$release_id" ] && [ -f "$NP_MOCK_RELEASE_READ_DIR/$release_id.json" ]; then
+      answer "$NP_MOCK_RELEASE_READ_DIR/$release_id.json"
+    fi
+    answer "${NP_MOCK_RELEASE_READ:-}"
+    ;;
+  *"release list"*) answer "${NP_MOCK_RELEASE_LIST:-}" ;;
+  *)
+    echo "{\"error\": \"unexpected command: np $*\"}"
+    exit 1
+    ;;
+esac

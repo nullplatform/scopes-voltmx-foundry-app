@@ -1,0 +1,34 @@
+#!/bin/bash
+# =============================================================================
+# Import the app version into Foundry
+#
+#   mfcli Import -f $FOUNDRY_ZIP -a $FOUNDRY_APP -v $APP_VERSION
+#
+# Importing the same version again is not an error, so the step can be re-run.
+# =============================================================================
+
+# The engine sources every step in one bash -c joined by &&: run this step in
+# a child shell so its exit codes, traps and shell options stay inside it.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
+set -euo pipefail
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mfcli_run"
+
+if [ -z "${FOUNDRY_ZIP:-}" ] || [ ! -f "$FOUNDRY_ZIP" ]; then
+	{
+		echo "   ❌ The Foundry app zip is missing: ${FOUNDRY_ZIP:-(FOUNDRY_ZIP not set)}"
+		echo "  🔧 How to fix:"
+		echo "    • Run the deployment workflow from the start so fetch_asset downloads the app"
+	} >&2
+	exit 1
+fi
+
+echo "📝 Importing Foundry app $FOUNDRY_APP version $APP_VERSION..."
+mfcli_run Import -f "$FOUNDRY_ZIP" -a "$FOUNDRY_APP" -v "$APP_VERSION" || exit 1
+[ -z "$MFCLI_OUTPUT" ] || printf '   📋 %s\n' "$MFCLI_OUTPUT"
+echo "✅ Import complete"

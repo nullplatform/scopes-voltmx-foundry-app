@@ -1,0 +1,79 @@
+{
+  "results": [
+    {
+      "id": "provider-foundry-namespace",
+      "nrn": "organization=1:account=2:namespace=3",
+      "specification_id": "spec-foundry",
+      "attributes": {
+        "environment_name": "namespace-env",
+        "auth": {
+          "account_id": "100000009"
+        },
+        "credentials_secret": "voltmx/mobile/foundry-namespace",
+        "assets": {
+          "bucket": "assets-aws-mobile-namespace",
+          "region": "us-east-1"
+        },
+        "marker": "namespace-level",
+        "allowed_apps": [
+          "PetStore"
+        ]
+      }
+    },
+    {
+      "id": "provider-foundry-application",
+      "nrn": "organization=1:account=2:namespace=3:application=442353700",
+      "specification_id": "spec-foundry",
+      "attributes": {
+        "environment_name": "uat",
+        "auth": {
+          "account_id": "100000001"
+        },
+        "credentials_secret": "voltmx/mobile/foundry-uat",
+        "assets": {
+          "bucket": "assets-aws-mobile",
+          "region": "us-east-1"
+        },
+        "marker": "application-level",
+        "allowed_apps": [
+          "PetStore"
+        ]
+      }
+    },
+    {
+      "id": "provider-mobile-account",
+      "nrn": "organization=1:account=2",
+      "specification_id": "spec-mobile",
+      "attributes": {
+        "signing_layer": "prebuilt",
+        "distribution_layer": "firebase",
+        "gate_layer": "none",
+        "assets": {
+          "bucket": "assets-aws-mobile",
+          "region": "us-east-1"
+        },
+        "marker": "mobile-store-configuration"
+      }
+    },
+    {
+      "id": "provider-foundry-account",
+      "nrn": "organization=1:account=2",
+      "specification_id": "spec-foundry",
+      "attributes": {
+        "environment_name": "account-env",
+        "auth": {
+          "account_id": "100000008"
+        },
+        "credentials_secret": "voltmx/mobile/foundry-account",
+        "assets": {
+          "bucket": "assets-aws-mobile-account",
+          "region": "us-east-1"
+        },
+        "marker": "account-level",
+        "allowed_apps": [
+          "PetStore"
+        ]
+      }
+    }
+  ]
+}

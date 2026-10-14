@@ -1,0 +1,155 @@
+#!/bin/bash
+# =============================================================================
+# Input validators shared by the deployment scripts (sourced).
+#
+# Values that reach mfcli, the cloud CLIs and file paths come from the
+# context, the scope configuration and the asset registry. The agent role is
+# broader than this scope, so each value is checked before it is used:
+#
+#   validate_foundry_name <value> <label> <cause> <fix>
+#       Foundry app and environment names: ^[A-Za-z0-9][A-Za-z0-9._-]*$ and
+#       no "..". They become mfcli arguments (and file names in the mock).
+#   validate_semver <value>
+#   validate_scope_secret_name <name> <field> <example>
+#       Secrets must live under the voltmx/ prefix (what the IAM policy of the
+#       scope allows). Rejects anything else, including paths and ARNs.
+#   validate_secret_in_prefix <name> <prefix>
+#       The secret must also live under the folder of this namespace
+#       (SECRETS_PREFIX, default voltmx/<namespace slug>/), so a scope cannot
+#       use the Foundry technical user of another team.
+#   validate_asset_url <url>
+#       Assets must come from ASSETS_BUCKET (s3://<bucket>/... or the
+#       virtual-hosted https url of the bucket) and under ASSETS_PREFIX
+#       (default foundry/), the prefix the IAM role of the scope reads.
+#
+# Each prints the troubleshooting block to stderr and returns 1 on rejection.
+# =============================================================================
+
+is_foundry_name() {
+	[[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && [[ "$1" != *..* ]]
+}
+
+is_semver() {
+	[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
+}
+
+validate_foundry_name() {
+	local value="$1" label="$2" cause="$3" fix="$4"
+	is_foundry_name "$value" && return 0
+	{
+		echo "   ❌ Invalid $label '$value': use letters, digits, '.', '_' or '-', starting with a letter or digit"
+		echo "  💡 Possible causes:"
+		echo "    • $cause"
+		echo "  🔧 How to fix:"
+		echo "    • $fix"
+	} >&2
+	return 1
+}
+
+validate_semver() {
+	local value="$1"
+	is_semver "$value" && return 0
+	{
+		echo "   ❌ Invalid release version '$value': must be a semantic version such as 1.2.3"
+		echo "  💡 Possible causes:"
+		echo "    • The release was created with a version Foundry cannot use as an app version"
+		echo "  🔧 How to fix:"
+		echo "    • Create the release with a semantic version (e.g. 1.2.3 or 1.2.3-rc.1)"
+	} >&2
+	return 1
+}
+
+validate_scope_secret_name() {
+	local name="$1" field="$2" example="$3"
+	if [[ "$name" =~ ^voltmx/[a-zA-Z0-9/_-]+$ ]] && [[ "$name" != *"/../"* ]] && [[ "$name" != *"/./"* ]] && [[ "$name" != *"/.." ]]; then
+		return 0
+	fi
+	{
+		echo "   ❌ Secret name '$name' is outside the voltmx/ namespace ($field)"
+		echo "  💡 Possible causes:"
+		echo "    • The 'Volt MX Foundry app' scope configuration names a secret this scope is not allowed to read"
+		echo "  🔧 How to fix:"
+		echo "    • Store the secret under the voltmx/ prefix (e.g. $example) and set $field to that name"
+	} >&2
+	return 1
+}
+
+validate_secret_in_prefix() {
+	local name="$1" prefix="$2"
+	if [ -n "$prefix" ] && [[ "$name" == "$prefix"?* ]]; then
+		return 0
+	fi
+	{
+		echo "   ❌ Secret '$name' is outside the secrets of this namespace: credentials_secret must start with $prefix"
+		echo "  💡 Possible causes:"
+		echo "    • The scope configuration points at the Foundry technical user of another team"
+		echo "  🔧 How to fix:"
+		echo "    • Store the Foundry user of this namespace under $prefix (or set secrets_prefix in the scope configuration) and point credentials_secret at it"
+	} >&2
+	return 1
+}
+
+validate_asset_url() {
+	local url="$1" bucket="${ASSETS_BUCKET:-}" prefix="${ASSETS_PREFIX:-foundry/}" host key=""
+
+	if [ -z "$bucket" ]; then
+		{
+			echo "   ❌ ASSETS_BUCKET is not set"
+			echo "  💡 Possible causes:"
+			echo "    • build_context did not run before this step"
+			echo "  🔧 How to fix:"
+			echo "    • Run the deployment workflow from the start so build_context resolves the assets bucket"
+		} >&2
+		return 1
+	fi
+
+	# The key inside the bucket, or empty when the url is not the bucket's.
+	if [[ "$url" != *" "* ]] && [[ "$url" != *".."* ]]; then
+		case "$url" in
+			"s3://$bucket/"?*) key="${url#s3://"$bucket"/}" ;;
+			https://*)
+				host="${url#https://}"
+				host="${host%%/*}"
+				case "$host" in
+					"$bucket.s3.amazonaws.com")
+						[[ "${url#https://"$host"/}" != "$url" ]] && key="${url#https://"$host"/}"
+						;;
+					"$bucket.s3."*".amazonaws.com")
+						local region="${host#"$bucket".s3.}"
+						region="${region%.amazonaws.com}"
+						if [[ "$region" =~ ^[a-z0-9-]+$ ]] && [[ "${url#https://"$host"/}" != "$url" ]]; then
+							key="${url#https://"$host"/}"
+						fi
+						;;
+				esac
+				;;
+		esac
+	fi
+
+	if [ -z "$key" ]; then
+		{
+			echo "   ❌ Asset URL is outside the configured assets bucket '$bucket': $url"
+			echo "  💡 Possible causes:"
+			echo "    • The CI uploaded the asset to a bucket other than assets.bucket of the 'Volt MX Foundry app' scope configuration"
+			echo "    • The asset url was tampered with"
+			echo "  🔧 How to fix:"
+			echo "    • Make the CI upload the app to s3://$bucket and register that url, or set assets.bucket to the bucket the CI uses"
+		} >&2
+		return 1
+	fi
+
+	# The IAM role of the scope (specs/requirements/aws, assets_prefix) only
+	# reads this prefix of the bucket: refuse the rest here, with the reason.
+	if [[ "$key" == "$prefix"?* ]]; then
+		return 0
+	fi
+	{
+		echo "   ❌ Asset URL is outside the '$prefix' prefix of the assets bucket '$bucket': $url"
+		echo "  💡 Possible causes:"
+		echo "    • The CI uploaded the Foundry app outside the prefix the scope role may read (ASSETS_PREFIX in values.yaml, assets_prefix of specs/requirements/aws)"
+		echo "  🔧 How to fix:"
+		echo "    • Make the CI upload the exported app under s3://$bucket/$prefix and register that url"
+		echo "    • Or set ASSETS_PREFIX in values.yaml to the prefix the CI uses, and the same assets_prefix in the IAM module of the scope"
+	} >&2
+	return 1
+}

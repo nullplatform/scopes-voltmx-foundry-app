@@ -1,0 +1,38 @@
+#!/bin/bash
+# =============================================================================
+# Apply the service configuration profile to the environment
+#
+#   mfcli import-config -f $WORKDIR/profile.json -a $FOUNDRY_APP -e $ENVIRONMENT_NAME
+#
+# The rendered profile carries parameter values (secrets included): it is
+# deleted once Foundry has it, whatever the result.
+# =============================================================================
+
+# The engine sources every step in one bash -c joined by &&: run this step in
+# a child shell so its exit codes, traps and shell options stay inside it.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
+set -euo pipefail
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mfcli_run"
+
+profile="${WORKDIR:?WORKDIR is not set}/profile.json"
+trap 'rm -f "$profile"' EXIT
+
+if [ ! -f "$profile" ]; then
+	{
+		echo "   ❌ The service profile is missing: $profile"
+		echo "  🔧 How to fix:"
+		echo "    • Run render_profile before this step"
+	} >&2
+	exit 1
+fi
+
+echo "📝 Applying the service profile to $FOUNDRY_APP in environment $ENVIRONMENT_NAME..."
+mfcli_run import-config -f "$profile" -a "$FOUNDRY_APP" -e "$ENVIRONMENT_NAME" || exit 1
+[ -z "$MFCLI_OUTPUT" ] || printf '   📋 %s\n' "$MFCLI_OUTPUT"
+echo "✅ Service profile applied"

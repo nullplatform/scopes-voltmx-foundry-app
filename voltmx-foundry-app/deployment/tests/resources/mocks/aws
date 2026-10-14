@@ -1,0 +1,60 @@
+#!/bin/bash
+# =============================================================================
+# Mock aws CLI for the BATS tests. Put this directory first on PATH.
+#
+#   aws s3 cp <src> <dest> ...
+#       Copies the file named by AWS_MOCK_S3_OBJECT to <dest>. With
+#       AWS_MOCK_S3_FAIL set it fails like a bucket the role cannot read.
+#   aws secretsmanager get-secret-value --secret-id <id> ...
+#       Prints the file $AWS_MOCK_SECRETS_DIR/<id with / replaced by _>, or
+#       fails like a missing secret.
+#
+# When AWS_MOCK_CALLS_LOG is set every invocation is appended as "aws <args>".
+# =============================================================================
+
+if [ -n "${AWS_MOCK_CALLS_LOG:-}" ]; then
+  echo "aws $*" >> "$AWS_MOCK_CALLS_LOG"
+fi
+
+case "${1:-} ${2:-}" in
+  "s3 cp")
+    src="${3:-}"
+    dest="${4:-}"
+    if [ -n "${AWS_MOCK_S3_FAIL:-}" ]; then
+      echo "fatal error: An error occurred (403) when calling the HeadObject operation: Forbidden" >&2
+      exit 1
+    fi
+    if [ -z "${AWS_MOCK_S3_OBJECT:-}" ] || [ ! -f "$AWS_MOCK_S3_OBJECT" ]; then
+      echo "fatal error: An error occurred (404) when calling the HeadObject operation: Key does not exist" >&2
+      exit 1
+    fi
+    mkdir -p "$(dirname "$dest")"
+    cp "$AWS_MOCK_S3_OBJECT" "$dest"
+    echo "download: $src to $dest"
+    exit 0
+    ;;
+  "secretsmanager get-secret-value")
+    secret_id=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --secret-id) secret_id="${2:-}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    file="${AWS_MOCK_SECRETS_DIR:-/nonexistent}/$(echo "$secret_id" | tr '/' '_')"
+    if [ ! -f "$file" ]; then
+      echo "An error occurred (ResourceNotFoundException) when calling the GetSecretValue operation: Secrets Manager can't find the specified secret." >&2
+      exit 254
+    fi
+    cat "$file"
+    exit 0
+    ;;
+  "--version ")
+    echo "aws-cli/2.22.0 Python/3.12.6 mock"
+    exit 0
+    ;;
+  *)
+    echo "mock aws: unexpected command: aws $*" >&2
+    exit 1
+    ;;
+esac

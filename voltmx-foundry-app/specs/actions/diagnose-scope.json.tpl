@@ -1,17 +1,19 @@
 {
-  "name": "switch-traffic",
-  "slug": "switch-traffic",
-  "type": "custom",
+  "name": "Diagnose Scope",
+  "slug": "diagnose-scope",
+  "type": "diagnose",
   "retryable": true,
   "service_specification_id": "{{ env.Getenv "SERVICE_SPECIFICATION_ID" }}",
   "parameters": {
     "schema": {
       "type": "object",
-      "required": ["scope_id", "deployment_id", "desired_traffic"],
+      "required": ["scope_id"],
       "properties": {
-        "scope_id": { "type": "string" },
-        "deployment_id": { "type": "string" },
-        "desired_traffic": { "type": "number" }
+        "scope_id": {
+          "type": "number",
+          "readOnly": true,
+          "visibleOn": ["read"]
+        }
       }
     },
     "values": {}
@@ -23,5 +25,9 @@
       "properties": {}
     },
     "values": {}
+  },
+  "annotations": {
+    "show_on": ["manage", "performance"],
+    "runs_over": "scope"
   }
 }

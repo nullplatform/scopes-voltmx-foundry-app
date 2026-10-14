@@ -1,7 +1,7 @@
 {
   "nrn": "{{ env.Getenv "NRN" }}",
   "status": "active",
-  "description": "Channel to handle VoltMX Foundry app scopes",
+  "description": "Channel to handle Volt MX Foundry app scopes",
   "type": "agent",
   "source": [
     "telemetry",

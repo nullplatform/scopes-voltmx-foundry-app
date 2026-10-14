@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+# Mock of HCL Volt MX Foundry CLI (mfcli). See README.md for the contract.
+set -euo pipefail
+
+STATE_DIR="${MFCLI_MOCK_STATE:-/tmp/mfcli-mock-state}"
+APPS_FILE="$STATE_DIR/apps.json"
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: mfcli <command> -u <user> -p <password> (-t <account id> | -au <Identity URL> -cu <Console URL>) [options]
+
+Commands (case-insensitive):
+  authenticate
+  Import          -f <zip> [-a <app>] [-v <version>]
+  Export          -a <app> -f <zip> [-v <version>]
+  Publish         -e <env> -a <app> [-v <version>] [--skipwebapp]
+  Unpublish       -e <env> -a <app>
+  publish-status  -e <env> -a <app>
+  appinfo         -e <env> -a <app> [-v <version>]
+  import-config   -f <json> -a <app> -e <env> [-v <version>]
+  export-config   -a <app> -e <env> [-f <json>] [-v <version>] [-x <format>] [-y <level>]
+USAGE
+}
+
+usage_error() {
+  echo "Error: $(mask "$1")" >&2
+  usage
+  exit 2
+}
+
+fail() {
+  echo "Error: $(mask "$1")" >&2
+  exit 1
+}
+
+SECRETS=""
+
+add_secret() {
+  [ -n "$1" ] || return 0
+  SECRETS="$SECRETS$1
+"
+}
+
+collect_secrets() {
+  local next_is_secret=0 arg rest
+  for arg in "$@"; do
+    if [ "$next_is_secret" -eq 1 ]; then
+      add_secret "$arg"
+      next_is_secret=0
+      continue
+    fi
+    case "$arg" in
+      -p|--password) next_is_secret=1 ;;
+      -p=*|--password=*) add_secret "${arg#*=}" ;;
+    esac
+    rest=" $arg"
+    while [[ "$rest" =~ [[:space:]](-p|--password)([[:space:]]+|=)([^[:space:]]+)(.*)$ ]]; do
+      add_secret "${BASH_REMATCH[3]}"
+      rest="${BASH_REMATCH[4]}"
+    done
+  done
+}
+
+mask() {
+  local text="$1" secret
+  while IFS= read -r secret; do
+    [ -n "$secret" ] || continue
+    text="${text//"$secret"/***}"
+  done <<< "$SECRETS"
+  printf '%s' "$text"
+}
+
+log_invocation() {
+  [ -n "${MFCLI_MOCK_LOG:-}" ] || return 0
+  local line="mfcli" arg
+  for arg in "$@"; do
+    line="$line $arg"
+  done
+  if [ ! -d "$(dirname "$MFCLI_MOCK_LOG")" ]; then
+    echo "Warning: MFCLI_MOCK_LOG directory does not exist, not logging: $MFCLI_MOCK_LOG" >&2
+    return 0
+  fi
+  printf '%s\n' "$(mask "$line")" >> "$MFCLI_MOCK_LOG"
+}
+
+json_read() {
+  local file="$1"
+  if [ -f "$file" ]; then cat "$file"; else echo '{}'; fi
+}
+
+json_write() {
+  local file="$1" content="$2" tmp
+  mkdir -p "$(dirname "$file")"
+  tmp="$(mktemp "$file.XXXXXX")"
+  printf '%s\n' "$content" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+env_file() { echo "$STATE_DIR/envs/$1.json"; }
+config_file() { echo "$STATE_DIR/configs/$1/$2.json"; }
+
+collect_secrets "$@"
+log_invocation "$@"
+
+[ $# -gt 0 ] || usage_error "missing command"
+COMMAND="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+shift
+
+case "$COMMAND" in
+  authenticate|import|export|publish|unpublish|publish-status|appinfo|import-config|export-config) ;;
+  help|-h|--help) usage; exit 0 ;;
+  *) usage_error "unknown command '$COMMAND'" ;;
+esac
+
+USER_NAME="" PASSWORD="" ACCOUNT="" IDENTITY_URL="" CONSOLE_URL=""
+APP="" ENV_NAME="" FILE="" VERSION=""
+
+while [ $# -gt 0 ]; do
+  flag="$1"
+  case "$flag" in
+    --skipwebapp=*|--async=*|--release-lock=*|--mfa=*|--verbose=*)
+      shift; continue ;;
+    -*=*)
+      value="${flag#*=}"
+      flag="${flag%%=*}"
+      shift
+      set -- "$flag" "$value" "$@" ;;
+  esac
+  case "$flag" in
+    --skipwebapp|-ay|--async|--release-lock|--mfa|--verbose)
+      shift; continue ;;
+    -u|--user|-p|--password|-t|--account|-au|--identity|-cu|--console| \
+    -a|--app|-e|--environment|-f|--file|-v|--version|-x|-y|-to|--timeout)
+      [ $# -ge 2 ] || usage_error "flag $flag requires a value"
+      value="$2"
+      shift 2 ;;
+    *) usage_error "unknown option '$flag'" ;;
+  esac
+  case "$flag" in
+    -u|--user) USER_NAME="$value" ;;
+    -p|--password) PASSWORD="$value" ;;
+    -t|--account) ACCOUNT="$value" ;;
+    -au|--identity) IDENTITY_URL="$value" ;;
+    -cu|--console) CONSOLE_URL="$value" ;;
+    -a|--app) APP="$value" ;;
+    -e|--environment) ENV_NAME="$value" ;;
+    -f|--file) FILE="$value" ;;
+    -v|--version) VERSION="$value" ;;
+  esac
+done
+
+[ -n "$USER_NAME" ] || usage_error "missing required option -u <user>"
+[ -n "$PASSWORD" ] || usage_error "missing required option -p <password>"
+if [ -z "$ACCOUNT" ]; then
+  if [ -z "$IDENTITY_URL" ] || [ -z "$CONSOLE_URL" ]; then
+    usage_error "provide -t <account id> (cloud) or both -au <Identity URL> and -cu <Console URL> (on-premise)"
+  fi
+fi
+
+validate_name() {
+  local value="$1" label="$2"
+  [ -n "$value" ] || return 0
+  if ! [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || [[ "$value" == *..* ]]; then
+    usage_error "invalid $label '$value': use letters, digits, '.', '_' or '-', starting with a letter or digit"
+  fi
+}
+
+validate_name "$APP" "app name"
+validate_name "$ENV_NAME" "environment name"
+
+require() {
+  local value="$1" name="$2"
+  [ -n "$value" ] || usage_error "missing required option $name for $COMMAND"
+}
+
+case "$COMMAND" in
+  import) require "$FILE" "-f <file name>" ;;
+  export) require "$APP" "-a <app name>"; require "$FILE" "-f <file name>" ;;
+  publish|unpublish|publish-status|appinfo|export-config)
+    require "$ENV_NAME" "-e <environment name>"; require "$APP" "-a <app name>" ;;
+  import-config)
+    require "$FILE" "-f <file name>"; require "$ENV_NAME" "-e <environment name>"; require "$APP" "-a <app name>" ;;
+esac
+
+if [ "${MFCLI_MOCK_AUTH_FAIL:-0}" = "1" ] \
+  || { [ -n "${MFCLI_MOCK_VALID_PASSWORD:-}" ] && [ "$PASSWORD" != "$MFCLI_MOCK_VALID_PASSWORD" ]; }; then
+  fail "Authentication failed. Invalid credentials for user '$USER_NAME'."
+fi
+
+mkdir -p "$STATE_DIR"
+
+LOCK_DIR="$STATE_DIR/.lock"
+LOCK_HELD=0
+
+release_lock() {
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    LOCK_HELD=0
+  fi
+}
+
+acquire_lock() {
+  local timeout="${MFCLI_MOCK_LOCK_TIMEOUT:-30}" waited=0
+  trap release_lock EXIT
+  until mkdir "$LOCK_DIR" 2>/dev/null; do
+    if [ "$waited" -ge $((timeout * 10)) ]; then
+      fail "Could not acquire the mock state lock after ${timeout}s. Remove $LOCK_DIR if it is stale."
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  LOCK_HELD=1
+}
+
+app_has_version() {
+  json_read "$APPS_FILE" | jq -e --arg app "$1" --arg v "$2" '(.[$app].versions // []) | index($v) != null' >/dev/null
+}
+
+latest_version() {
+  json_read "$APPS_FILE" | jq -r --arg app "$1" '(.[$app].versions // []) | last // empty'
+}
+
+cmd_authenticate() {
+  local seed
+  seed="$(printf '%s|%s%s' "$USER_NAME" "$ACCOUNT" "$IDENTITY_URL" | cksum | cut -d' ' -f1)"
+  echo "mock-token-$seed-$(date +%s)"
+}
+
+cmd_import() {
+  [ -f "$FILE" ] || fail "File not found: $FILE"
+  unzip -tq "$FILE" >/dev/null 2>&1 || fail "Invalid app archive (not a zip file): $FILE"
+
+  local meta_path meta="" name="$APP" version="$VERSION"
+  meta_path="$(unzip -Z1 "$FILE" 2>/dev/null | grep -E '^Apps/[^/]+/Meta\.json$' | head -n 1 || true)"
+  if [ -n "$meta_path" ]; then
+    meta="$(unzip -p "$FILE" "$meta_path" 2>/dev/null || true)"
+    if [ -z "$name" ]; then
+      name="$(printf '%s' "$meta" | jq -r '.name // empty' 2>/dev/null || true)"
+      [ -n "$name" ] || name="$(printf '%s' "$meta_path" | cut -d/ -f2)"
+    fi
+    [ -n "$version" ] || version="$(printf '%s' "$meta" | jq -r '.version // empty' 2>/dev/null || true)"
+  fi
+  [ -n "$name" ] || usage_error "missing -a <app name> and the archive has no Apps/<app>/Meta.json"
+  validate_name "$name" "app name"
+  [ -n "$version" ] || version="1.0"
+
+  local updated
+  updated="$(json_read "$APPS_FILE" | jq --arg app "$name" --arg v "$version" '
+    .[$app].versions = (((.[$app].versions // []) - [$v]) + [$v])')"
+  json_write "$APPS_FILE" "$updated"
+  echo "App '$name' version '$version' imported successfully."
+}
+
+cmd_export() {
+  local version="${VERSION:-$(latest_version "$APP")}"
+  [ -n "$version" ] || fail "App '$APP' not found."
+  app_has_version "$APP" "$version" || fail "App '$APP' version '$version' not found."
+
+  [ -d "$(dirname "$FILE")" ] || fail "Directory not found: $(dirname "$FILE")"
+
+  local work
+  work="$(mktemp -d)"
+  mkdir -p "$work/Apps/$APP"
+  jq -n --arg app "$APP" --arg v "$version" '{name: $app, version: $v}' > "$work/Apps/$APP/Meta.json"
+  (cd "$work" && zip -qr export.zip Apps)
+  mv "$work/export.zip" "$FILE"
+  rm -rf "$work"
+  echo "App '$APP' version '$version' exported to $FILE"
+}
+
+env_entry() {
+  json_read "$(env_file "$ENV_NAME")" | jq -c --arg app "$APP" '.[$app] // empty'
+}
+
+# $1 status, $2 version being published, $3 polls left (optional)
+set_env_status() {
+  local file updated
+  file="$(env_file "$ENV_NAME")"
+  updated="$(json_read "$file" | jq --arg app "$APP" --arg s "$1" --arg v "$2" --arg polls "${3:-}" '
+    (.[$app].active_version // null) as $previous
+    | .[$app] = {
+        status: $s,
+        version: $v,
+        active_version: (if $s == "success" then $v else $previous end)
+      }
+    | if $polls != "" then .[$app].polls_left = ($polls | tonumber) else . end')"
+  json_write "$file" "$updated"
+}
+
+cmd_publish() {
+  local version="${VERSION:-$(latest_version "$APP")}"
+  [ -n "$version" ] || fail "App '$APP' not found."
+  app_has_version "$APP" "$version" || fail "App '$APP' version '$version' not found. Import it before publishing."
+
+  if [ "${MFCLI_MOCK_PUBLISH_FAIL:-0}" = "1" ]; then
+    set_env_status failed "$version"
+    fail "Publish of app '$APP' version '$version' to environment '$ENV_NAME' failed."
+  fi
+  if [ "${MFCLI_MOCK_PUBLISH_HANG:-0}" = "1" ]; then
+    set_env_status in_progress "$version"
+    echo "Publish of app '$APP' version '$version' to environment '$ENV_NAME' is in progress."
+    return 0
+  fi
+  local polls="${MFCLI_MOCK_PUBLISH_POLLS:-0}"
+  [[ "$polls" =~ ^[0-9]+$ ]] || usage_error "MFCLI_MOCK_PUBLISH_POLLS must be a non-negative integer"
+  if [ "$polls" -gt 0 ]; then
+    set_env_status in_progress "$version" "$polls"
+    echo "Publish of app '$APP' version '$version' to environment '$ENV_NAME' is in progress."
+    return 0
+  fi
+  set_env_status success "$version"
+  echo "App '$APP' version '$version' published successfully to environment '$ENV_NAME'."
+}
+
+cmd_unpublish() {
+  [ -n "$(env_entry)" ] || fail "App '$APP' is not published to environment '$ENV_NAME'."
+  local file updated
+  file="$(env_file "$ENV_NAME")"
+  updated="$(json_read "$file" | jq --arg app "$APP" 'del(.[$app])')"
+  json_write "$file" "$updated"
+  echo "App '$APP' unpublished successfully from environment '$ENV_NAME'."
+}
+
+cmd_publish_status() {
+  local entry
+  entry="$(env_entry)"
+  [ -n "$entry" ] || fail "App '$APP' is not published to environment '$ENV_NAME'."
+  local polls_left
+  polls_left="$(printf '%s' "$entry" | jq -r '.polls_left // empty')"
+  if [ -n "$polls_left" ]; then
+    if [ "$polls_left" -gt 0 ]; then
+      json_write "$(env_file "$ENV_NAME")" "$(json_read "$(env_file "$ENV_NAME")" | jq --arg app "$APP" '.[$app].polls_left -= 1')"
+    else
+      set_env_status success "$(printf '%s' "$entry" | jq -r .version)"
+      entry="$(env_entry)"
+    fi
+  fi
+  printf '%s' "$entry" | jq -c '{status, version, active_version: (.active_version // null)}'
+}
+
+cmd_appinfo() {
+  local entry
+  entry="$(env_entry)"
+  local active
+  active="$(printf '%s' "$entry" | jq -r '.active_version // empty' 2>/dev/null || true)"
+  [ -n "$active" ] || fail "App '$APP' is not published to environment '$ENV_NAME'."
+  if [ -n "$VERSION" ] && [ "$active" != "$VERSION" ]; then
+    fail "App '$APP' version '$VERSION' is not published to environment '$ENV_NAME'."
+  fi
+  jq -n --arg env "$ENV_NAME" --arg app "$APP" '{
+    appKey: "mock-key-\($env)-\($app)",
+    appSecret: "mock-secret",
+    serviceUrl: "https://mock-\($env).foundry.local/services/\($app)"
+  }'
+}
+
+cmd_import_config() {
+  [ -f "$FILE" ] || fail "File not found: $FILE"
+  local content
+  content="$(jq -c . "$FILE" 2>/dev/null)" || fail "Invalid service configuration profile (not JSON): $FILE"
+  json_write "$(config_file "$ENV_NAME" "$APP")" "$content"
+  echo "Service configuration profile imported for app '$APP' in environment '$ENV_NAME'."
+}
+
+cmd_export_config() {
+  local content
+  content="$(json_read "$(config_file "$ENV_NAME" "$APP")")"
+  if [ -n "$FILE" ]; then
+    [ -d "$(dirname "$FILE")" ] || fail "Directory not found: $(dirname "$FILE")"
+    printf '%s\n' "$content" > "$FILE"
+    echo "Service configuration profile exported to $FILE"
+  else
+    printf '%s\n' "$content"
+  fi
+}
+
+[ "$COMMAND" = "authenticate" ] || acquire_lock
+
+case "$COMMAND" in
+  authenticate) cmd_authenticate ;;
+  import) cmd_import ;;
+  export) cmd_export ;;
+  publish) cmd_publish ;;
+  unpublish) cmd_unpublish ;;
+  publish-status) cmd_publish_status ;;
+  appinfo) cmd_appinfo ;;
+  import-config) cmd_import_config ;;
+  export-config) cmd_export_config ;;
+esac

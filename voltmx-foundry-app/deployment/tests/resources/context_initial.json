@@ -1,0 +1,119 @@
+{
+  "account": {
+    "id": 2,
+    "name": "Playground",
+    "nrn": "organization=1:account=2",
+    "slug": "playground"
+  },
+  "application": {
+    "id": 442353700,
+    "name": "PetStore",
+    "namespace_id": 3,
+    "nrn": "organization=1:account=2:namespace=3:application=442353700",
+    "slug": "petstore-foundry"
+  },
+  "asset": {
+    "id": 21,
+    "build_id": 30,
+    "name": "foundry",
+    "type": "bundle",
+    "url": "s3://assets-aws-mobile/foundry/442353700/30/PetStore.zip",
+    "platform": "",
+    "metadata": {},
+    "nrn": "organization=1:account=2:namespace=3:application=442353700:build=30:asset=21"
+  },
+  "deployment": {
+    "id": 77,
+    "nrn": "organization=1:account=2:namespace=3:application=442353700:scope=7:deployment=77",
+    "release_id": 9,
+    "scope_id": 7,
+    "status": "creating",
+    "status_in_scope": "inactive",
+    "strategy": "initial"
+  },
+  "namespace": {
+    "id": 3,
+    "name": "Mobile",
+    "nrn": "organization=1:account=2:namespace=3",
+    "slug": "mobile"
+  },
+  "parameters": {
+    "results": [
+      {
+        "id": 10,
+        "name": "CORE_BASE_URL",
+        "type": "environment",
+        "secret": false,
+        "values": [
+          {
+            "id": "11",
+            "value": "https://core.uat.petstore.io"
+          }
+        ],
+        "variable": "CORE_BASE_URL",
+        "version_id": 12
+      },
+      {
+        "id": 13,
+        "name": "IDP_CLIENT_SECRET",
+        "type": "environment",
+        "secret": true,
+        "values": [
+          {
+            "id": "14",
+            "value": "idp-s3cr3t-value"
+          }
+        ],
+        "variable": "IDP_CLIENT_SECRET",
+        "version_id": 15
+      }
+    ]
+  },
+  "providers": {
+    "cloud-providers": {
+      "authentication": {
+        "region": "us-east-1"
+      }
+    },
+    "scope-configurations": {
+      "environment_name": "uat",
+      "auth": {
+        "account_id": "100000001"
+      },
+      "credentials_secret": "voltmx/mobile/foundry-uat",
+      "assets": {
+        "bucket": "assets-aws-mobile",
+        "region": "us-east-1"
+      },
+      "marker": "from-context",
+      "allowed_apps": [
+        "PetStore"
+      ]
+    }
+  },
+  "release": {
+    "application_id": 442353700,
+    "build_id": 30,
+    "id": 9,
+    "nrn": "organization=1:account=2:namespace=3:application=442353700:release=9",
+    "semver": "1.0.0",
+    "status": "active"
+  },
+  "scope": {
+    "application_id": 442353700,
+    "asset_name": "foundry",
+    "capabilities": {
+      "foundry_app_name": "PetStore",
+      "asset_type": "bundle"
+    },
+    "dimensions": {
+      "environment": "uat"
+    },
+    "id": 7,
+    "name": "UAT",
+    "nrn": "organization=1:account=2:namespace=3:application=442353700:scope=7",
+    "slug": "uat",
+    "status": "active",
+    "type": "custom"
+  }
+}

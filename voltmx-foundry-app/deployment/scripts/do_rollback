@@ -1,0 +1,45 @@
+#!/bin/bash
+# =============================================================================
+# Roll back to the previous finalized deployment
+#
+#   mfcli Publish -e $ENVIRONMENT_NAME -a $FOUNDRY_APP -v $PREVIOUS_RELEASE_SEMVER
+#
+# then waits for it with wait_publish. The version is still imported in
+# Foundry (imports are kept), so no download is needed. Without a previous
+# finalized deployment nothing is changed in Foundry and the step fails.
+# =============================================================================
+
+# The engine sources every step in one bash -c joined by &&: run this step in
+# a child shell so its exit codes, traps and shell options stay inside it.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+source "$SCRIPT_DIR/mfcli_run"
+# shellcheck source=voltmx-foundry-app/deployment/scripts/validators
+source "$SCRIPT_DIR/validators"
+
+previous="${PREVIOUS_RELEASE_SEMVER:-}"
+if [ -z "$previous" ]; then
+	{
+		echo "   ❌ No previous finalized deployment to roll back to"
+		echo "  💡 Possible causes:"
+		echo "    • This is the first deployment of the scope, or every earlier one failed or was rolled back"
+		echo "  🔧 How to fix:"
+		echo "    • Nothing was changed in Foundry: deploy the release you want to return to"
+	} >&2
+	exit 1
+fi
+validate_semver "$previous" || exit 1
+
+echo "📝 Rolling back $FOUNDRY_APP in environment $ENVIRONMENT_NAME to version $previous (deployment ${PREVIOUS_DEPLOYMENT_ID:-unknown})..."
+mfcli_run Publish -e "$ENVIRONMENT_NAME" -a "$FOUNDRY_APP" -v "$previous" || exit 1
+[ -z "$MFCLI_OUTPUT" ] || printf '   📋 %s\n' "$MFCLI_OUTPUT"
+
+bash "$SCRIPT_DIR/wait_publish" "$previous"
+echo "✨ Rollback complete: version $previous is active in environment $ENVIRONMENT_NAME"

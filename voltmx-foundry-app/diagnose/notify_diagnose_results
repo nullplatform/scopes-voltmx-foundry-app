@@ -1,0 +1,4 @@
+#!/bin/bash
+# Executor after_each: send every check result collected so far to the platform.
+
+notify_results

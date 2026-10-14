@@ -1,0 +1,59 @@
+#!/bin/bash
+# =============================================================================
+# Export the outputs of the publish
+#
+#   mfcli appinfo -e $ENVIRONMENT_NAME -a $FOUNDRY_APP -v $APP_VERSION
+#
+# Keeps app_key and service_url (never the app secret) in
+# $WORKDIR/foundry.json and records them on the deployment as a message with
+# code VOLTMX_FOUNDRY_APP (PATCH /deployment only takes status, strategy_data
+# and messages). Best effort: the app is already published, so a failure here
+# warns and does not fail the deployment.
+# =============================================================================
+
+# The engine sources every step in one bash -c joined by &&: run this step in
+# a child shell so its exit codes, traps and shell options stay inside it.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+	bash "${BASH_SOURCE[0]}" "$@"
+	return $?
+fi
+
+set -euo pipefail
+
+# shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mfcli_run"
+
+echo "📡 Reading the app info of $FOUNDRY_APP $APP_VERSION in environment $ENVIRONMENT_NAME..."
+summary=""
+if MFCLI_RUN_QUIET=1 mfcli_run appinfo -e "$ENVIRONMENT_NAME" -a "$FOUNDRY_APP" -v "$APP_VERSION"; then
+	summary=$(printf '%s' "$MFCLI_OUTPUT" | jq -c \
+		--arg app "$FOUNDRY_APP" --arg env "$ENVIRONMENT_NAME" --arg version "$APP_VERSION" '
+		select(type == "object" and (.appKey | type == "string") and (.serviceUrl | type == "string"))
+		| {app: $app, environment: $env, version: $version, app_key: .appKey, service_url: .serviceUrl}' 2>/dev/null || true)
+fi
+MFCLI_OUTPUT=""
+
+if [ -z "$summary" ]; then
+	echo "   ⚠️ Could not read the app info of $FOUNDRY_APP $APP_VERSION in environment $ENVIRONMENT_NAME; the deployment is published but has no app key recorded"
+	echo "✨ Outputs exported"
+	exit 0
+fi
+
+printf '%s\n' "$summary" > "$WORKDIR/foundry.json"
+echo "   ✅ app_key=$(printf '%s' "$summary" | jq -r .app_key)"
+echo "   ✅ service_url=$(printf '%s' "$summary" | jq -r .service_url)"
+
+body=$(jq -nc --arg summary "$summary" --argjson timestamp "$(date +%s)" '{
+	messages: [{
+		level: "INFO",
+		code: "VOLTMX_FOUNDRY_APP",
+		message: ("voltmx-foundry-app: " + $summary),
+		timestamp: $timestamp
+	}]
+}')
+if np deployment patch --id "$DEPLOYMENT_ID" --body "$body" --format json >/dev/null 2>&1; then
+	echo "   ✅ Recorded the Foundry app info on deployment $DEPLOYMENT_ID (message VOLTMX_FOUNDRY_APP)"
+else
+	echo "   ⚠️ Could not record the Foundry app info on deployment $DEPLOYMENT_ID (np deployment patch failed); it stays in $WORKDIR/foundry.json"
+fi
+echo "✨ Outputs exported"

@@ -37,12 +37,20 @@ NOTIFICATION_ACTION=$(echo "$CONTEXT" | jq -r '.action // empty')
 export NP_ACTION_CONTEXT CONTEXT SCOPE_ID DEPLOYMENT_ID SERVICE_ACTION SERVICE_ACTION_TYPE \
   NOTIFICATION_ACTION WORKING_DIRECTORY SERVICE_PATH OVERRIDES_PATH
 
-# Telemetry and parameters are not implemented: answer empty JSON (stdout must be JSON only).
-# To serve them, add <entity>/workflows and route here, as nullplatform/scopes k8s does.
+# Telemetry answers JSON on stdout (nothing else may reach it), and only for a
+# telemetry request: a service action (it has a slug) always goes to its
+# handler below, whatever its .action says.
+# instance:data lists the releases of the distribution channel (instance/workflows/list.yaml);
+# logs and metrics are not implemented and answer empty. Route a new one here, as nullplatform/scopes k8s does.
+if [ -z "$SERVICE_ACTION" ]; then
+  case "$NOTIFICATION_ACTION" in
+    instance:data) exec "$WORKING_DIRECTORY/service/instance/entrypoint" ;;
+    log:read) echo '{"results":[],"next_page_token":""}'; exit 0 ;;
+    metric:list) echo '{"results":[]}'; exit 0 ;;
+    metric:*) echo '{"metric":"","type":"","period_in_seconds":0,"unit":"","results":[]}'; exit 0 ;;
+  esac
+fi
 case "$NOTIFICATION_ACTION" in
-  log:read) echo '{"results":[],"next_page_token":""}'; exit 0 ;;
-  metric:list | instance:data) echo '{"results":[]}'; exit 0 ;;
-  metric:*) echo '{"metric":"","type":"","period_in_seconds":0,"unit":"","results":[]}'; exit 0 ;;
   # Failing beats acknowledging a secret this scope never stored.
   parameter:*) echo "This scope does not store parameters ($NOTIFICATION_ACTION)" >&2; exit 1 ;;
 esac

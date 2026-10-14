@@ -1,0 +1,35 @@
+{
+  "paging": {
+    "limit": 200,
+    "offset": 0
+  },
+  "results": [
+    {
+      "id": 77,
+      "scope_id": 7,
+      "release_id": 9,
+      "status": "creating",
+      "status_in_scope": "candidate",
+      "strategy": "initial",
+      "created_at": "2025-12-22T18:27:54.701Z"
+    },
+    {
+      "id": 75,
+      "scope_id": 7,
+      "release_id": 8,
+      "status": "failed",
+      "status_in_scope": "inactive",
+      "strategy": "initial",
+      "created_at": "2025-12-20T10:00:00.000Z"
+    },
+    {
+      "id": 72,
+      "scope_id": 7,
+      "release_id": 62,
+      "status": "rolled_back",
+      "status_in_scope": "inactive",
+      "strategy": "initial",
+      "created_at": "2025-12-16T10:00:00.000Z"
+    }
+  ]
+}
