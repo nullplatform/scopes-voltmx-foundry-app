@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.3...v0.1.4) (2026-10-15)
+
+
+### Bug Fixes
+
+* **deps:** bump nullplatform/scopes/worker-bridge from 2.0.1 to 2.0.3 ([5dce425](https://github.com/nullplatform/scopes-voltmx-foundry-app/commit/5dce42538d7d07843810bac425a3f1e23d968a40))
+
 ## [0.1.3](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.2...v0.1.3) (2026-10-15)
 
 
