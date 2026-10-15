@@ -8,7 +8,7 @@ A Volt MX app has two halves. The client (Iris) is a mobile or web binary that `
 
 ## Why there is no blue-green
 
-Foundry keeps **one active version per app and environment**: `Publish` replaces it and there is no way to serve two versions side by side or move a share of the traffic between them. The scope therefore offers `start-initial`, `rollback-deployment` (publishes the version of the previous finalized deployment again; every imported version stays in Foundry, so nothing is downloaded) and `delete-deployment`, plus `create-scope`, `update-scope`, `delete-scope` and `diagnose-scope`. There is no `start-blue-green`, `switch-traffic` or `finalize-blue-green`, and the deployment is the version every client gets as soon as the publish finishes.
+Foundry keeps **one active version per app and environment**: `Publish` replaces it and there is no way to serve two versions side by side or move a share of the traffic between them. The scope therefore offers `start-initial`, `rollback-deployment` (publishes the version of the previous finalized deployment again; every imported version stays in Foundry, so nothing is downloaded) and `delete-deployment` (when the deleted deployment's version is the one Foundry serves, it publishes the previous finalized release again the same way, or unpublishes when the scope has none), plus `create-scope`, `update-scope`, `delete-scope` and `diagnose-scope`. There is no `start-blue-green`, `switch-traffic` or `finalize-blue-green`, and the deployment is the version every client gets as soon as the publish finishes.
 
 ## Asset contract
 
@@ -31,7 +31,7 @@ A Foundry environment is shared by the apps of many teams, and the technical use
 
 - **Apps.** `allowed_apps` (exact names or `Prefix*` globs) and/or `app_name_prefix` must match the scope's `foundry_app_name`; with neither set, every action fails asking for one. A lone `*` is rejected.
 - **Credentials.** `credentials_secret` must live under `voltmx/<namespace slug>/` (or the `secrets_prefix` of the scope configuration, a folder under `voltmx/`), checked by `build_context` and again by `read_credentials`; the IAM role of `specs/requirements/aws` reads `voltmx/*` only.
-- **Ownership on delete.** Foundry records no owner, so `delete-scope` only unpublishes when the active version was released by a finalized deployment of this scope, and `delete-deployment` only when the deployment's version is the active one. Keep one scope per app and environment.
+- **Ownership on delete.** Foundry records no owner, so `delete-scope` only unpublishes when the active version was released by a finalized deployment of this scope, and `delete-deployment` only acts when the deployment's version is the active one (restoring the previous finalized release of the scope, or unpublishing when there is none). Keep one scope per app and environment.
 
 The full rules and their limitations are in [`voltmx-foundry-app/README.md`](voltmx-foundry-app/README.md#multi-tenant-foundry-environments).
 
@@ -65,7 +65,7 @@ mise.toml               run it on your machine as a package (`np package run`)
 | `diagnose-scope` | `scope/workflows/diagnose.yaml` (executor over `diagnose/checks`) |
 | `start-initial` | `deployment/workflows/initial.yaml` |
 | `rollback-deployment` | `deployment/workflows/rollback.yaml` |
-| `delete-deployment` | `deployment/workflows/delete.yaml` (it must also clean up `failed` deployments) |
+| `delete-deployment` | `deployment/workflows/delete.yaml` (also for `failed` deployments, and for a deployment cancelled while in flight: with the initial strategy the platform dispatches `delete-deployment`, not `rollback-deployment`) |
 | any other slug `foo` | `scope/workflows/foo.yaml`, or `deployment/workflows/foo.yaml` when it carries a `deployment_id` |
 
 A new action needs its `specs/actions/<slug>.json.tpl`, its slug in `available_actions`, and the workflow. Every `--overrides-path` directory can hold `<entity>/workflows/<action>.yaml` to layer steps on top of the base workflow.

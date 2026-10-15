@@ -44,8 +44,9 @@ binds each scope to what DevOps allowed for its namespace or dimension:
   mock has none either, and the service profile is the app's configuration, not ours). `do_unpublish` therefore
   infers ownership: on `delete-scope` it only unpublishes when the active version was released by a `finalized`
   deployment of this scope (`np deployment list` + `np release read`), it leaves the app published with a warning
-  otherwise, and it fails closed when the history cannot be read. On `delete-deployment` it only unpublishes when
-  the deployment's version is the active one.
+  otherwise, and it fails closed when the history cannot be read. On `delete-deployment` it only acts when the
+  deployment's version is the active one, and then publishes the previous finalized release of the scope again
+  (or unpublishes when the scope has none).
 
 Limitations: ownership is matched by version, so two scopes allowed to deploy the same app (for example one per
 dimension on the same environment) are indistinguishable when they deployed the same version. Keep one scope per
@@ -60,11 +61,29 @@ versions side by side and move traffic between them. The scope therefore offers 
 plus `create-scope`, `update-scope`, `delete-scope` and `diagnose-scope`. There is no `start-blue-green`, `switch-traffic` or
 `finalize-blue-green`.
 
+Cancelling a deployment while it is in flight does not dispatch `rollback-deployment` (the platform only does that
+for blue-green strategies): it dispatches `delete-deployment` for the cancelled deployment, and the platform keeps
+the previous deployment as the active one. A cancelled deployment may already have published its version, so
+`delete-deployment` looks at what Foundry serves:
+
+| Active version in Foundry | Previous finalized deployment of the scope | `delete-deployment` does |
+|---|---|---|
+| another version | any | nothing: the deployment never took over |
+| the deployment's version | exists (the one `build_context` resolves for a rollback: still active in the scope, else the most recent) | publishes that release again through `do_rollback` and waits for it |
+| the deployment's version | the same release | nothing: that version is the one that should serve |
+| the deployment's version | none | `Unpublish` |
+
+It fails open on lookups so a deployment can always be deleted: when `publish-status` fails or does not answer
+JSON, when the deployments of the scope cannot be listed (`PREVIOUS_DEPLOYMENT_LOOKUP=failed`: it cannot tell which
+version should take over, so it does not unpublish) or when the release of the previous deployment has no readable
+version, it warns and leaves the app as it is. A `Publish` of the previous version or an `Unpublish` that fails
+fails the step.
+
 ## Deployment scripts (`deployment/scripts/`)
 
 | Script | Kind | Does |
 |---|---|---|
-| `build_context` | sourced | validates CONTEXT and the scope configuration; exports `FOUNDRY_APP`, `APP_VERSION`, `ASSET_URL`, `ENVIRONMENT_NAME`, `MFCLI_AUTH_ARGS`, `CREDENTIALS_SECRET`, `SECRETS_PREFIX`, `PROFILE_VARS`, `PREVIOUS_DEPLOYMENT_ID`, `PREVIOUS_RELEASE_SEMVER`, `WORKDIR`, ... |
+| `build_context` | sourced | validates CONTEXT and the scope configuration; exports `FOUNDRY_APP`, `APP_VERSION`, `ASSET_URL`, `ENVIRONMENT_NAME`, `MFCLI_AUTH_ARGS`, `CREDENTIALS_SECRET`, `SECRETS_PREFIX`, `PROFILE_VARS`, `PREVIOUS_DEPLOYMENT_ID`, `PREVIOUS_RELEASE_SEMVER`, `PREVIOUS_DEPLOYMENT_LOOKUP`, `WORKDIR`, ... |
 | `fetch_asset` | sourced | downloads the zip from the configured bucket only; exports `FOUNDRY_ZIP` |
 | `read_credentials` | sourced | reads the secret (only under `SECRETS_PREFIX`); exports `MFCLI_USER`, `MFCLI_PASSWORD` (memory only, never printed) |
 | `mfcli_run` | library / script | the only caller of `$MFCLI_CMD`; masks the password and translates errors (credentials, not found, timeout) |
@@ -73,7 +92,7 @@ plus `create-scope`, `update-scope`, `delete-scope` and `diagnose-scope`. There 
 | `wait_publish` | script | polls `publish-status` until `success`, `failed` or the timeout |
 | `export_outputs` | script | `appinfo` -> deployment message `VOLTMX_FOUNDRY_APP` with `app_key` and `service_url` (best effort, never the secret) |
 | `do_rollback` | script | `Publish -v $PREVIOUS_RELEASE_SEMVER` and waits |
-| `do_unpublish` | script | `Unpublish`; with `APP_VERSION` only when that version is active, without it only when the active version was released by this scope |
+| `do_unpublish` | script | `UNPUBLISH_MODE=deployment`: when `APP_VERSION` is the active version, restores `PREVIOUS_RELEASE_SEMVER` through `do_rollback` or runs `Unpublish` when there is none; `UNPUBLISH_MODE=scope`: `Unpublish` only when the active version was released by this scope |
 
 The engine sources every step of a workflow in one `bash -c`, joined by `&&`. `build_context`, `fetch_asset` and
 `read_credentials` export variables, so they run in that shell; every other step re-runs itself in a child shell
@@ -87,7 +106,7 @@ Every workflow starts with `utils/assume_role_step` (the IAM role of `specs/requ
 |---|---|---|
 | start-initial | `build_context`, `fetch_asset`, `read_credentials`, `do_import`, `render_profile`, `do_reconfig`, `do_publish`, `wait_publish`, `export_outputs` | |
 | rollback-deployment | `build_context`, `read_credentials`, `do_rollback` | `BUILD_CONTEXT_MODE: rollback` |
-| delete-deployment | `build_context`, `read_credentials`, `do_unpublish` | `BUILD_CONTEXT_MODE: rollback`, `UNPUBLISH_MODE: deployment` |
+| delete-deployment | `build_context`, `read_credentials`, `do_unpublish` (which runs `do_rollback` when the previous release must take over) | `BUILD_CONTEXT_MODE: rollback`, `UNPUBLISH_MODE: deployment` |
 | create-scope, update-scope | `build_context`, `read_credentials` (the configuration resolves, the app is allowed, the secret exists and has the right shape; nothing is called in Foundry) | `BUILD_CONTEXT_MODE: scope` |
 | delete-scope | `build_context`, `read_credentials`, `do_unpublish` | `BUILD_CONTEXT_MODE: scope`, `UNPUBLISH_MODE: scope` |
 | diagnose-scope | `build_context`, then the executor runs `diagnose/checks/{console_reachable,credentials_valid,app_published}` and reports each result to the action (`diagnose/utils/diagnose_utils`) | `BUILD_CONTEXT_MODE: scope` |
@@ -121,8 +140,9 @@ which sends TERM and, 5 seconds later, KILL. A `publish-status` call that hangs 
 `wait_publish` only accepts a `success` that reports the target as both `version` and `active_version` (otherwise it
 keeps polling until `PUBLISH_TIMEOUT_SECONDS`) and fails at once when `publish-status` does not answer JSON.
 `do_unpublish` never relies on mfcli error texts. When `publish-status` fails or does not answer JSON, deleting a
-deployment warns and leaves the app as it is (it must never be blocked, and not unpublishing is the safe side),
-while deleting a scope fails closed.
+deployment warns and leaves the app as it is (it must never be blocked, and not unpublishing is the safe side;
+the other tolerated lookup failures are listed under [Actions](#actions-no-blue-green)), while deleting a scope
+fails closed.
 
 Secrets: parameter values reach `jq` only through stdin or the environment, never its argv. The Foundry password
 does reach the argv of mfcli (`-p`, the documented contract), so it is visible in the process list of the worker
