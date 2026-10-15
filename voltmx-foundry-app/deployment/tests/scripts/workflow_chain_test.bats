@@ -160,27 +160,81 @@ WRAPPER
 	assert_mfcli_calls ""
 }
 
-@test "delete-deployment: unpublishes only when the deployment's version is the active one" {
+@test "delete-deployment: the deployment that took over is deleted and the previous finalized release is restored" {
+	# Deployment 77 (release 1.0.0) published over deployment 70 (release 0.9.0, still active in the scope), then was cancelled.
+	seed_as "0.9.0"
+	seed_as "1.0.0"
 	CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.asset) | .deployment.status = "deleting"')
 	export CONTEXT BUILD_CONTEXT_MODE="rollback" UNPUBLISH_MODE="deployment"
 
-	seed_as "1.0.0"
 	run_chain build_context read_credentials do_unpublish
+
 	assert_equal "$status" "0"
 	assert_line "CHAIN-COMPLETED"
-	assert_line "✅ PetStore is no longer published in environment uat"
+	assert_line "   📋 Previous deployment: 70 (release 0.9.0)"
+	assert_line "   📋 Version 1.0.0 of deployment 77 is the active version of PetStore in environment uat"
+	assert_line "✅ Restored version 0.9.0 of PetStore in environment uat after deleting deployment 77"
+	refute_line "✅ PetStore is no longer published in environment uat"
+	local auth="-u np-foundry -p *** -t 100000001"
+	assert_mfcli_calls "$(printf '%s\n' \
+		"mfcli publish-status $auth -e uat -a PetStore" \
+		"mfcli Publish $auth -e uat -a PetStore -v 0.9.0" \
+		"mfcli publish-status $auth -e uat -a PetStore")"
+	assert_equal "$(MFCLI_USER=np-foundry MFCLI_PASSWORD="$SECRET_PASSWORD" FOUNDRY_APP=PetStore ENVIRONMENT_NAME=uat mock_publish_status | jq -c .)" \
+		'{"status":"success","version":"0.9.0","active_version":"0.9.0"}'
+	refute_output_contains "$SECRET_PASSWORD"
+}
 
+@test "delete-deployment: a deployment whose version is not the active one leaves Foundry alone" {
 	seed_as "0.9.0"
+	CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.asset) | .deployment.status = "deleting"')
+	export CONTEXT BUILD_CONTEXT_MODE="rollback" UNPUBLISH_MODE="deployment"
+
 	run_chain build_context read_credentials do_unpublish
+
 	assert_equal "$status" "0"
 	assert_line "CHAIN-COMPLETED"
 	assert_line "   📋 Version 1.0.0 is not the active version of PetStore in environment uat (active: 0.9.0); leaving it published"
 	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
 }
 
-@test "delete-deployment then delete-scope: the scope can be deleted after its deployment unpublished the active version" {
+@test "delete-deployment: without another finalized deployment of the scope the active version is unpublished" {
+	seed_as "1.0.0"
+	export NP_MOCK_DEPLOYMENT_LIST="$MOCKS_DIR/deployment_list_no_previous.json"
+	CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.asset) | .deployment.status = "deleting"')
+	export CONTEXT BUILD_CONTEXT_MODE="rollback" UNPUBLISH_MODE="deployment"
+
+	run_chain build_context read_credentials do_unpublish
+
+	assert_equal "$status" "0"
+	assert_line "CHAIN-COMPLETED"
+	assert_line "   📋 Previous deployment: none"
+	assert_line "   📋 Scope 7 has no other finalized deployment: nothing to restore, unpublishing"
+	assert_line "✅ PetStore is no longer published in environment uat"
+	assert_mfcli_calls "$(printf '%s\n' \
+		"mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore" \
+		"mfcli Unpublish -u np-foundry -p *** -t 100000001 -e uat -a PetStore")"
+}
+
+@test "delete-deployment: when the deployments of the scope cannot be listed the active version is left as it is" {
+	seed_as "1.0.0"
+	unset NP_MOCK_DEPLOYMENT_LIST
+	CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.asset) | .deployment.status = "deleting"')
+	export CONTEXT BUILD_CONTEXT_MODE="rollback" UNPUBLISH_MODE="deployment"
+
+	run_chain build_context read_credentials do_unpublish
+
+	assert_equal "$status" "0"
+	assert_line "CHAIN-COMPLETED"
+	assert_line "   ⚠️ Could not list the deployments of scope 7; continuing without a previous deployment"
+	assert_line "   ⚠️ Could not list the deployments of scope 7 to find the version that should take over; leaving version 1.0.0 published"
+	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
+}
+
+@test "delete-deployment then delete-scope: the scope can be deleted after its only deployment unpublished the active version" {
 	seed_as "1.0.0"
 	local deployment_context="$CONTEXT"
+	export NP_MOCK_DEPLOYMENT_LIST="$MOCKS_DIR/deployment_list_no_previous.json"
 	CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.asset) | .deployment.status = "deleting"')
 	export CONTEXT BUILD_CONTEXT_MODE="rollback" UNPUBLISH_MODE="deployment"
 
@@ -189,7 +243,7 @@ WRAPPER
 	assert_line "✅ PetStore is no longer published in environment uat"
 
 	CONTEXT=$(echo "$deployment_context" | jq -c 'del(.deployment, .release, .asset)')
-	export CONTEXT BUILD_CONTEXT_MODE="scope" UNPUBLISH_MODE="scope"
+	export CONTEXT BUILD_CONTEXT_MODE="scope" UNPUBLISH_MODE="scope" NP_MOCK_DEPLOYMENT_LIST="$MOCKS_DIR/deployment_list.json"
 	: > "$MFCLI_MOCK_LOG"
 
 	run_chain build_context read_credentials do_unpublish

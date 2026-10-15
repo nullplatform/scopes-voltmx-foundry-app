@@ -5,10 +5,18 @@
 #   mfcli Unpublish -e $ENVIRONMENT_NAME -a $FOUNDRY_APP
 #
 # UNPUBLISH_MODE (step configuration, required; never inferred):
-#   deployment  delete-deployment: the app is only unpublished when
-#               APP_VERSION (the version of the deployment) is the active one:
-#               deleting an old or failed deployment must not take down the
-#               version that serves.
+#   deployment  delete-deployment (a deployment deleted by hand, or cancelled
+#               while in flight: with the initial strategy the platform
+#               dispatches delete-deployment, not rollback-deployment). Foundry
+#               keeps one active version per app and environment, so when
+#               APP_VERSION (the version of the deployment) is the active one
+#               the deployment took over and the version of the previous
+#               finalized deployment of the scope (PREVIOUS_RELEASE_SEMVER, the
+#               one build_context resolves for a rollback) is published again
+#               through do_rollback; only when the scope has no other
+#               finalized deployment is the app unpublished. When APP_VERSION
+#               is not the active one nothing is changed: deleting an old or
+#               failed deployment must not take down the version that serves.
 #   scope       delete-scope: the app is only unpublished when its active version was released by a
 # finalized deployment of THIS scope (np deployment list + np release read):
 # Foundry environments are shared, and Foundry has no tag or attribute where
@@ -28,6 +36,15 @@
 #               deployment must never be blocked, and not unpublishing is the
 #               safe side.
 #   scope       fail closed.
+#
+# Deployment mode tolerates every lookup failure (exit 0, the app is left as
+# it is): publish-status failing (credentials, timeout, not published) or not
+# answering JSON, the deployments of the scope not listable in build_context
+# (PREVIOUS_DEPLOYMENT_LOOKUP=failed: it cannot tell whether an earlier
+# version should take over, so it does not unpublish), and a previous
+# deployment whose release version cannot be read. What is never tolerated:
+# a Publish of the previous version or an Unpublish that fails.
+#
 # A failed Unpublish always fails the step.
 # =============================================================================
 
@@ -40,8 +57,9 @@ fi
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=voltmx-foundry-app/deployment/scripts/mfcli_run
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mfcli_run"
+source "$SCRIPT_DIR/mfcli_run"
 
 # Prints the semvers released by the finalized deployments of SCOPE_ID, one
 # per line. Returns 1 when the deployments cannot be listed.
@@ -151,6 +169,36 @@ if [ "$UNPUBLISH_MODE" = "deployment" ]; then
 		echo "   📋 Version $APP_VERSION is not the active version of $FOUNDRY_APP in environment $ENVIRONMENT_NAME (active: $active); leaving it published"
 		exit 0
 	fi
+	echo "   📋 Version $APP_VERSION of deployment ${DEPLOYMENT_ID:-unknown} is the active version of $FOUNDRY_APP in environment $ENVIRONMENT_NAME"
+	previous="${PREVIOUS_RELEASE_SEMVER:-}"
+	if [ -n "$previous" ]; then
+		if [ "$previous" = "$APP_VERSION" ]; then
+			echo "   📋 Previous deployment ${PREVIOUS_DEPLOYMENT_ID:-unknown} released the same version $previous; leaving it published"
+			exit 0
+		fi
+		echo "   📝 Restoring version $previous of previous deployment ${PREVIOUS_DEPLOYMENT_ID:-unknown} (Foundry keeps one active version per app and environment)"
+		if ! bash "$SCRIPT_DIR/do_rollback"; then
+			{
+				echo "   ❌ Could not restore version $previous of $FOUNDRY_APP in environment $ENVIRONMENT_NAME; version $APP_VERSION of deleted deployment ${DEPLOYMENT_ID:-unknown} may still be active"
+				echo "  🔧 How to fix:"
+				echo "    • Check the publish of $FOUNDRY_APP in the Foundry console (environment $ENVIRONMENT_NAME), then delete the deployment again or deploy the release you want to serve"
+			} >&2
+			exit 1
+		fi
+		echo "✅ Restored version $previous of $FOUNDRY_APP in environment $ENVIRONMENT_NAME after deleting deployment ${DEPLOYMENT_ID:-unknown}"
+		exit 0
+	fi
+	if [ "${PREVIOUS_DEPLOYMENT_LOOKUP:-}" = "failed" ]; then
+		echo "   ⚠️ Could not list the deployments of scope ${SCOPE_ID:-(unknown)} to find the version that should take over; leaving version $APP_VERSION published"
+		echo "   🔧 How to fix: deploy or roll back to the release that should serve in environment $ENVIRONMENT_NAME"
+		exit 0
+	fi
+	if [ -n "${PREVIOUS_DEPLOYMENT_ID:-}" ]; then
+		echo "   ⚠️ The release of previous deployment $PREVIOUS_DEPLOYMENT_ID has no readable version; leaving version $APP_VERSION published"
+		echo "   🔧 How to fix: deploy or roll back to the release that should serve in environment $ENVIRONMENT_NAME"
+		exit 0
+	fi
+	echo "   📋 Scope ${SCOPE_ID:-(unknown)} has no other finalized deployment: nothing to restore, unpublishing"
 else
 	if ! printf '%s\n' "$released" | grep -qxF -- "$active"; then
 		echo "   ⚠️ Version $active of $FOUNDRY_APP is active in environment $ENVIRONMENT_NAME, but no finalized deployment of scope $SCOPE_ID released it; leaving it published (it may belong to another scope)"

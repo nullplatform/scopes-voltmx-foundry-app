@@ -1,10 +1,21 @@
-# delete-deployment, also for failed deployments: the version of the
-# deployment is unpublished only when it is the one active in the environment
-# (deleting an old or failed deployment must not take down the version that
-# serves). do_unpublish fails open in deployment mode: when the publish status
-# cannot be read it warns and leaves the app as it is, so a deployment can
-# always be deleted. build_context runs in rollback mode (no asset, no profile
-# variables): a deployment whose build has no asset must still be deletable.
+# delete-deployment, also for failed deployments and for a deployment
+# cancelled while in flight (with the initial strategy the platform dispatches
+# delete-deployment, never rollback-deployment). Foundry keeps one active
+# version per app and environment, so do_unpublish in deployment mode looks at
+# what is active:
+#   - another version: nothing to do, the deployment never took over;
+#   - the version of this deployment, and the scope has a previous finalized
+#     deployment (resolved by build_context as for a rollback): that version
+#     is published again through do_rollback, so the deployment the platform
+#     keeps as active is the one that serves;
+#   - the version of this deployment and no other finalized deployment: the
+#     app is unpublished.
+# It fails open on lookups (publish status unreadable, deployments of the
+# scope not listable, previous release unreadable): it warns and leaves the
+# app as it is, so a deployment can always be deleted; only a Publish or an
+# Unpublish that fails fails the step. build_context runs in rollback mode (no
+# asset, no profile variables): a deployment whose build has no asset must
+# still be deletable.
 include:
   - "$SERVICE_PATH/values.yaml"
 steps:
@@ -48,6 +59,12 @@ steps:
         type: environment
       - name: SCOPE_ID
         type: environment
+      - name: PREVIOUS_DEPLOYMENT_ID
+        type: environment
+      - name: PREVIOUS_RELEASE_SEMVER
+        type: environment
+      - name: PREVIOUS_DEPLOYMENT_LOOKUP
+        type: environment
       - name: WORKDIR_BASE
         type: environment
       - name: WORKDIR
@@ -60,7 +77,7 @@ steps:
         type: environment
       - name: MFCLI_PASSWORD
         type: environment
-  - name: unpublish
+  - name: restore or unpublish
     type: script
     file: "$SERVICE_PATH/deployment/scripts/do_unpublish"
     configuration:

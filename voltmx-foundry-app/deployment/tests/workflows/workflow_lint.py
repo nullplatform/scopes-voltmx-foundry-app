@@ -51,7 +51,14 @@ CONSUMES = {
         MFCLI + ["PREVIOUS_RELEASE_SEMVER", "PREVIOUS_DEPLOYMENT_ID"],
         ["deployment/scripts/do_rollback", "deployment/scripts/wait_publish", MFCLI_RUN,
          "deployment/scripts/validators"]),
-    "do_unpublish": (MFCLI + ["APP_VERSION", "SCOPE_ID"], ["deployment/scripts/do_unpublish", MFCLI_RUN]),
+    # do_unpublish consumes different variables per UNPUBLISH_MODE (consumer_key tells them apart).
+    "do_unpublish:scope": (MFCLI + ["APP_VERSION", "SCOPE_ID"], ["deployment/scripts/do_unpublish", MFCLI_RUN]),
+    # Deployment mode restores the previous release through do_rollback when the deleted one is active.
+    "do_unpublish:deployment": (
+        MFCLI + ["APP_VERSION", "SCOPE_ID", "DEPLOYMENT_ID", "PREVIOUS_RELEASE_SEMVER", "PREVIOUS_DEPLOYMENT_ID",
+                 "PREVIOUS_DEPLOYMENT_LOOKUP"],
+        ["deployment/scripts/do_unpublish", "deployment/scripts/do_rollback", "deployment/scripts/wait_publish",
+         "deployment/scripts/validators", MFCLI_RUN]),
     "instance_list": (MFCLI + ["WORKDIR_BASE", "WORKDIR"], ["instance/scripts/list", MFCLI_RUN]),
     # The checks read the credentials themselves (credentials_valid sources read_credentials).
     "diagnose_checks": (
@@ -95,6 +102,8 @@ def consumer_key(step):
     file = os.path.basename(step.get("file", ""))
     if file == "list" and "/instance/" in step.get("file", ""):
         return "instance_list"
+    if file == "do_unpublish":
+        return "do_unpublish:" + str((step.get("configuration") or {}).get("UNPUBLISH_MODE", ""))
     return file
 
 

@@ -503,6 +503,7 @@ use_context_configuration() {
 
 	assert_equal "$PREVIOUS_DEPLOYMENT_ID" "70"
 	assert_equal "$PREVIOUS_RELEASE_SEMVER" "0.9.0"
+	assert_equal "$PREVIOUS_DEPLOYMENT_LOOKUP" "ok"
 }
 
 @test "Should pick the most recent finalized deployment when none is active in the scope" {
@@ -524,10 +525,11 @@ use_context_configuration() {
 	run_build_context
 	assert_empty "$PREVIOUS_DEPLOYMENT_ID" "PREVIOUS_DEPLOYMENT_ID"
 	assert_empty "$PREVIOUS_RELEASE_SEMVER" "PREVIOUS_RELEASE_SEMVER"
+	assert_equal "$PREVIOUS_DEPLOYMENT_LOOKUP" "ok"
 	refute_np_called "release read"
 }
 
-@test "Should not fail when the deployment listing fails" {
+@test "Should not fail when the deployment listing fails, and tell the delete-deployment it could not look" {
 	unset NP_MOCK_DEPLOYMENT_LIST
 
 	run source "$SCRIPT"
@@ -535,6 +537,11 @@ use_context_configuration() {
 	assert_equal "$status" "0"
 	assert_line "   ⚠️ Could not list the deployments of scope 7; continuing without a previous deployment"
 	assert_line "   📋 Previous deployment: none"
+
+	run_build_context
+	assert_empty "$PREVIOUS_DEPLOYMENT_ID" "PREVIOUS_DEPLOYMENT_ID"
+	assert_empty "$PREVIOUS_RELEASE_SEMVER" "PREVIOUS_RELEASE_SEMVER"
+	assert_equal "$PREVIOUS_DEPLOYMENT_LOOKUP" "failed"
 }
 
 @test "Should drop a previous release semver that is not a version" {
