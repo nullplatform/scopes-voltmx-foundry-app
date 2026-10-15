@@ -39,6 +39,9 @@
 #   PROFILE_VARS            {"<variable>": "<value>"} from .parameters.results (never printed)
 #   PREVIOUS_DEPLOYMENT_ID, PREVIOUS_RELEASE_SEMVER  finalized deployment still
 #                           active in the scope, else the most recent finalized one
+#   PREVIOUS_DEPLOYMENT_LOOKUP  ok when the deployments of the scope were listed
+#                           (even without a previous one), failed when they could
+#                           not be (both PREVIOUS_* empty), empty in scope mode
 #   RELEASE_SEMVER, DEPLOYMENT_ID, SCOPE_ID, DIMENSION
 #   APPLICATION_SLUG, NAMESPACE_SLUG, SCOPE_SLUG
 #   WORKDIR_BASE            $WORKDIR as configured (values.yaml), kept for re-runs
@@ -593,10 +596,12 @@ fi
 # =============================================================================
 PREVIOUS_DEPLOYMENT_ID=""
 PREVIOUS_RELEASE_SEMVER=""
+PREVIOUS_DEPLOYMENT_LOOKUP=""
 if [ "$BUILD_CONTEXT_MODE" = "scope" ]; then
 	echo "   📋 Previous deployment: skipped (scope mode)"
 else
 	previous_deployment=""
+	PREVIOUS_DEPLOYMENT_LOOKUP="ok"
 	if deployments=$(np deployment list --scope-id "$SCOPE_ID" --all --max-pages 5 --format json 2>/dev/null) &&
 		previous_deployment=$(echo "$deployments" | jq -ec --arg current "$DEPLOYMENT_ID" '
 			(if type == "array" then . elif type == "object" and has("results") then .results else error("unexpected deployment listing") end)
@@ -609,6 +614,7 @@ else
 	else
 		echo "   ⚠️ Could not list the deployments of scope $SCOPE_ID; continuing without a previous deployment"
 		previous_deployment=""
+		PREVIOUS_DEPLOYMENT_LOOKUP="failed"
 	fi
 
 	if [ -n "$previous_deployment" ] && [ "$previous_deployment" != '""' ]; then
@@ -657,5 +663,5 @@ export BUILD_CONTEXT_MODE CONTEXT SCOPE_CONFIGURATION
 export FOUNDRY_APP APP_VERSION ASSET_TYPE ASSET_URL
 export ENVIRONMENT_NAME MFCLI_AUTH_ARGS CREDENTIALS_SECRET SECRETS_PREFIX ASSETS_BUCKET ASSETS_REGION ASSETS_PREFIX PROFILE_VARS
 export RELEASE_SEMVER DEPLOYMENT_ID SCOPE_ID DIMENSION APPLICATION_SLUG NAMESPACE_SLUG SCOPE_SLUG
-export PREVIOUS_DEPLOYMENT_ID PREVIOUS_RELEASE_SEMVER
+export PREVIOUS_DEPLOYMENT_ID PREVIOUS_RELEASE_SEMVER PREVIOUS_DEPLOYMENT_LOOKUP
 export WORKDIR_BASE WORKDIR

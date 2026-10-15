@@ -2,10 +2,12 @@
 # =============================================================================
 # Unit tests for deployment/scripts/do_unpublish: removes the app from the
 # Foundry environment. UNPUBLISH_MODE is required: in deployment mode
-# (delete-deployment) it only unpublishes when APP_VERSION is the active
-# version; in scope mode (delete-scope) only when the active version was
-# released by a finalized deployment of this scope. The end-to-end chains with
-# a real delete-scope context live in workflow_chain_test.bats.
+# (delete-deployment) it only acts when APP_VERSION is the active version,
+# and then restores the previous finalized release (PREVIOUS_RELEASE_SEMVER,
+# through do_rollback) or unpublishes when the scope has none; in scope mode
+# (delete-scope) it only unpublishes when the active version was released by
+# a finalized deployment of this scope. The end-to-end chains with real
+# delete-deployment and delete-scope contexts live in workflow_chain_test.bats.
 #
 # Run: bats voltmx-foundry-app/deployment/tests/scripts/do_unpublish_test.bats
 # =============================================================================
@@ -20,18 +22,103 @@ setup() {
 	export UNPUBLISH_MODE="deployment"
 }
 
-@test "Should unpublish the app when the deployment version is the active one" {
+@test "Should restore the previous finalized release when the deployment version is the active one" {
+	seed_active_version "0.9.0"
 	seed_active_version "1.0.0"
 
 	run bash "$SCRIPT"
 
 	assert_equal "$status" "0"
 	assert_line "📝 Unpublishing PetStore from environment uat (deployment mode)..."
+	assert_line "   📋 Version 1.0.0 of deployment 77 is the active version of PetStore in environment uat"
+	assert_line "   📝 Restoring version 0.9.0 of previous deployment 70 (Foundry keeps one active version per app and environment)"
+	assert_line "   ✅ Version 0.9.0 is active in environment uat"
+	assert_line "✅ Restored version 0.9.0 of PetStore in environment uat after deleting deployment 77"
+	refute_line "✅ PetStore is no longer published in environment uat"
+	assert_mfcli_calls "$(printf '%s\n' \
+		"mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore" \
+		"mfcli Publish -u np-foundry -p *** -t 100000001 -e uat -a PetStore -v 0.9.0" \
+		"mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore")"
+	assert_equal "$(mock_publish_status | jq -c .)" '{"status":"success","version":"0.9.0","active_version":"0.9.0"}'
+	refute_output_contains "$MFCLI_PASSWORD"
+}
+
+@test "Should unpublish the app when the deployment version is the active one and the scope has no other finalized deployment" {
+	seed_active_version "1.0.0"
+	export PREVIOUS_DEPLOYMENT_ID="" PREVIOUS_RELEASE_SEMVER="" PREVIOUS_DEPLOYMENT_LOOKUP="ok"
+
+	run bash "$SCRIPT"
+
+	assert_equal "$status" "0"
+	assert_line "📝 Unpublishing PetStore from environment uat (deployment mode)..."
+	assert_line "   📋 Scope 7 has no other finalized deployment: nothing to restore, unpublishing"
 	assert_line "   📋 App 'PetStore' unpublished successfully from environment 'uat'."
 	assert_line "✅ PetStore is no longer published in environment uat"
 	assert_mfcli_calls "$(printf '%s\n' \
 		"mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore" \
 		"mfcli Unpublish -u np-foundry -p *** -t 100000001 -e uat -a PetStore")"
+}
+
+@test "Should leave the app as it is when the previous deployment released the same version" {
+	seed_active_version "1.0.0"
+	export PREVIOUS_RELEASE_SEMVER="1.0.0"
+
+	run bash "$SCRIPT"
+
+	assert_equal "$status" "0"
+	assert_line "   📋 Previous deployment 70 released the same version 1.0.0; leaving it published"
+	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
+	assert_equal "$(mock_publish_status | jq -r .active_version)" "1.0.0"
+}
+
+@test "deployment mode: should leave the app as it is when the deployments of the scope could not be listed" {
+	seed_active_version "1.0.0"
+	export PREVIOUS_DEPLOYMENT_ID="" PREVIOUS_RELEASE_SEMVER="" PREVIOUS_DEPLOYMENT_LOOKUP="failed"
+
+	run bash "$SCRIPT"
+
+	assert_equal "$status" "0"
+	assert_line "   ⚠️ Could not list the deployments of scope 7 to find the version that should take over; leaving version 1.0.0 published"
+	assert_line "   🔧 How to fix: deploy or roll back to the release that should serve in environment uat"
+	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
+	assert_equal "$(mock_publish_status | jq -r .active_version)" "1.0.0"
+}
+
+@test "deployment mode: should leave the app as it is when the release of the previous deployment has no version" {
+	seed_active_version "1.0.0"
+	export PREVIOUS_RELEASE_SEMVER="" PREVIOUS_DEPLOYMENT_LOOKUP="ok"
+
+	run bash "$SCRIPT"
+
+	assert_equal "$status" "0"
+	assert_line "   ⚠️ The release of previous deployment 70 has no readable version; leaving version 1.0.0 published"
+	assert_mfcli_calls "mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore"
+	assert_equal "$(mock_publish_status | jq -r .active_version)" "1.0.0"
+}
+
+@test "deployment mode: should fail when the previous version cannot be published again" {
+	seed_active_version "1.0.0"
+
+	run bash "$SCRIPT"
+
+	assert_equal "$status" "1"
+	assert_line "   ❌ mfcli Publish failed (exit 1): Error: App 'PetStore' version '0.9.0' not found. Import it before publishing."
+	assert_line "   ❌ Could not restore version 0.9.0 of PetStore in environment uat; version 1.0.0 of deleted deployment 77 may still be active"
+	assert_line "    • Check the publish of PetStore in the Foundry console (environment uat), then delete the deployment again or deploy the release you want to serve"
+	refute_line "✅ PetStore is no longer published in environment uat"
+	assert_equal "$(mock_publish_status | jq -r .active_version)" "1.0.0"
+}
+
+@test "deployment mode: should fail when the restore does not finish in time" {
+	seed_active_version "0.9.0"
+	seed_active_version "1.0.0"
+	export MFCLI_MOCK_PUBLISH_HANG=1 PUBLISH_TIMEOUT_SECONDS=1
+
+	run bash "$SCRIPT"
+
+	assert_equal "$status" "1"
+	assert_line "   ❌ Publish did not finish in 1s; version 1.0.0 is still active. Re-run the deployment: Publish is idempotent"
+	assert_line "   ❌ Could not restore version 0.9.0 of PetStore in environment uat; version 1.0.0 of deleted deployment 77 may still be active"
 }
 
 @test "Should leave the app published when the deployment version is not the active one" {

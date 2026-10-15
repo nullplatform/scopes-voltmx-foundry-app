@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # =============================================================================
-# Smoke test of the real engine: runs deployment/workflows/{initial,rollback}.yaml
+# Smoke test of the real engine: runs deployment/workflows/{initial,rollback,delete}.yaml
 # with `np service workflow exec` (one bash -c that sources every step, joined
 # by &&), the mfcli mock as MFCLI_CMD and the CLI mocks of tests/resources/mocks
 # for everything else (np API calls, aws). No --build-context: CONTEXT comes
@@ -91,6 +91,26 @@ publish_status_as() {
 	assert_mfcli_calls "$(printf '%s\n' \
 		"mfcli Publish -u np-foundry -p *** -t 100000001 -e uat -a PetStore -v 0.9.0" \
 		"mfcli publish-status -u np-foundry -p *** -t 100000001 -e uat -a PetStore")"
+	assert_equal "$(publish_status_as | jq -r .active_version)" "0.9.0"
+	refute_output_contains "$SECRET_PASSWORD"
+}
+
+@test "Should restore the previous finalized release through the engine when the deleted deployment is the active one" {
+	seed_as "0.9.0"
+	seed_as "1.0.0"
+	export CONTEXT
+	CONTEXT=$(echo "$CONTEXT" | jq -c 'del(.asset) | .deployment.status = "deleting"')
+
+	run_engine delete
+
+	assert_equal "$status" "0"
+	[[ "$output" == *"Executing step: restore or unpublish"* ]]
+	assert_line "✅ Restored version 0.9.0 of PetStore in environment uat after deleting deployment 77"
+	local auth="-u np-foundry -p *** -t 100000001"
+	assert_mfcli_calls "$(printf '%s\n' \
+		"mfcli publish-status $auth -e uat -a PetStore" \
+		"mfcli Publish $auth -e uat -a PetStore -v 0.9.0" \
+		"mfcli publish-status $auth -e uat -a PetStore")"
 	assert_equal "$(publish_status_as | jq -r .active_version)" "0.9.0"
 	refute_output_contains "$SECRET_PASSWORD"
 }

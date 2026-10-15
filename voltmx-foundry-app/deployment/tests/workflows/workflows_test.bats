@@ -80,6 +80,29 @@ print(",".join("%s:%s" % (s["name"], (s.get("configuration") or {}).get("BUILD_C
 	assert_equal "$status" "0"
 }
 
+@test "Should require the delete-deployment workflow to declare what the restore through do_rollback consumes" {
+	python3 -c '
+import sys, yaml
+workflow = yaml.safe_load(open(sys.argv[1]))
+for step in workflow["steps"]:
+    if step["name"] == "build context":
+        step["output"] = [o for o in step["output"] if o["name"] not in ("PREVIOUS_RELEASE_SEMVER", "PREVIOUS_DEPLOYMENT_LOOKUP")]
+workflow["include"] = []
+yaml.safe_dump(workflow, open(sys.argv[2], "w"))
+' "$SCOPE_DIR/deployment/workflows/delete.yaml" "$TEST_TMP_DIR/delete.yaml"
+
+	lint outputs "$TEST_TMP_DIR/delete.yaml"
+
+	assert_equal "$status" "1"
+	assert_line "$TEST_TMP_DIR/delete.yaml: step 'restore or unpublish' consumes PREVIOUS_RELEASE_SEMVER, which no earlier step declares in its output"
+	assert_line "$TEST_TMP_DIR/delete.yaml: step 'restore or unpublish' consumes PREVIOUS_DEPLOYMENT_LOOKUP, which no earlier step declares in its output"
+
+	# delete-scope never restores: its build context (scope mode) has no previous deployment to declare.
+	lint outputs "$SCOPE_DIR/scope/workflows/delete.yaml"
+	assert_equal "$output" ""
+	assert_equal "$status" "0"
+}
+
 @test "Should catch a variable that is no longer declared as an output" {
 	python3 -c '
 import sys, yaml
@@ -138,12 +161,12 @@ EOF
 	done
 }
 
-@test "Should run build_context in rollback mode for rollbacks and deployment deletions, and unpublish with the right mode" {
+@test "Should run build_context in rollback mode for rollbacks and deployment deletions, and do_unpublish with the right mode" {
 	step_summary "$SCOPE_DIR/deployment/workflows/rollback.yaml"
 	assert_equal "$output" "assume role:,build context:rollback,read credentials:,rollback:"
 
 	step_summary "$SCOPE_DIR/deployment/workflows/delete.yaml"
-	assert_equal "$output" "assume role:,build context:rollback,read credentials:,unpublish:deployment"
+	assert_equal "$output" "assume role:,build context:rollback,read credentials:,restore or unpublish:deployment"
 
 	step_summary "$SCOPE_DIR/scope/workflows/delete.yaml"
 	assert_equal "$output" "assume role:,build context:scope,read credentials:,unpublish:scope"
