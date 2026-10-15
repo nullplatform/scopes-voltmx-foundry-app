@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.2...v0.1.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* **voltmx-foundry-app:** restore the previous release when deleting the deployment that is active ([e10db13](https://github.com/nullplatform/scopes-voltmx-foundry-app/commit/e10db1372615925014391c31d3dfc3a29754ef87))
+
 ## [0.1.2](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.1...v0.1.2) (2026-10-14)
 
 
