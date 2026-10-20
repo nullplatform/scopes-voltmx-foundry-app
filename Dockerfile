@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Worker image: the bridge runs the root entrypoint on every action. Add the tools your steps need.
-FROM public.ecr.aws/nullplatform/scopes/worker-bridge:2.0.3
+FROM public.ecr.aws/nullplatform/scopes/worker-bridge:2.0.4
 
 # Foundry tooling (Alpine base; bash, jq, unzip, curl and a busybox `timeout`
 # come with the bridge):
