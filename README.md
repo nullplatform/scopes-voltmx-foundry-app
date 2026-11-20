@@ -85,9 +85,100 @@ make test-tofu MODULE=voltmx-foundry-app     # specs/requirements/aws
 
 `deployment/tests/workflows/engine_smoke_test.bats` runs `initial` and `rollback` through the real `np` engine against the mock and is skipped when `np` is not installed. The spec tests need `gomplate`; the workflow checks need `python3` with PyYAML.
 
-## Register the scope
+## Install in your organization
 
-The `specs/*.json.tpl` files are gomplate templates rendered at registration: service specification, one action specification per `specs/actions/*.json.tpl`, scope configuration, scope type, and notification channel. Register them with the `nullplatform/scope_definition` and `nullplatform/scope_definition_agent_association` modules of [nullplatform/tofu-modules](https://github.com/nullplatform/tofu-modules), pinned to a release tag, from your infrastructure repository, and create the IAM role with `specs/requirements/aws` (its README shows the wiring into the agent).
+The scope is published once as the package `np-voltmx-foundry-app` (scope type "Volt MX Foundry app"), visible to every organization. You do not copy its specs: you install the package and use it read-only.
+
+How installing a package works, how it coexists with a copy you registered, how to upgrade, and when to fork instead are in the [package installation guide](https://docs.nullplatform.com/docs/packages/install); this section has what is specific to this scope.
+
+Already registered a copy with tofu-modules' `scope_definition` from your infrastructure repository? It keeps working: it registered specs that stay in every release, and the package installs next to it, as the guide explains.
+
+Installing it touches the same three layers as registering a scope yourself, and only the nullplatform layer changes:
+
+| Layer | What | Module |
+|---|---|---|
+| infrastructure (cloud credentials) | The permissions role the agent assumes: read of the exported apps in the assets bucket and of the `voltmx/*` secrets | [`voltmx-foundry-app/specs/requirements/aws`](./voltmx-foundry-app/specs/requirements/aws) |
+| nullplatform (nullplatform API key) | The installation of the package, the scope type, the NRN settings and the scope-configuration schema | tofu-modules' `scope_package_installation` |
+| bindings | The agent channel, the role under selector `voltmx-foundry-app` in your IAM provider, and the scope's settings | tofu-modules' `scope_definition_agent_association`, your providers |
+
+Pick ONE release of this repository (the latest is on its [releases page](https://github.com/nullplatform/scopes-voltmx-foundry-app/releases)) and use its version in every place below: the IAM role is the one the worker of that same release expects.
+
+```hcl
+# ── infrastructure layer ─────────────────────────────────────────────
+module "voltmx_foundry_app_requirements" {
+  source = "git::https://github.com/nullplatform/scopes-voltmx-foundry-app.git//voltmx-foundry-app/specs/requirements/aws?ref=vX.Y.Z"
+
+  cluster_name       = "my-cluster" # names the role nullplatform_my-cluster_voltmx_foundry_app_role
+  agent_role_arn     = module.agent_iam.nullplatform_agent_role_arn
+  assets_bucket_name = aws_s3_bucket.assets_mobile.bucket
+}
+
+# The agent role must be allowed to assume it: add it to the assume_role_arns
+# of tofu-modules' infrastructure/aws/iam/agent.
+#   assume_role_arns = [..., module.voltmx_foundry_app_requirements.permissions_role_arn]
+
+# ── nullplatform layer ───────────────────────────────────────────────
+module "voltmx_foundry_app" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/scope_package_installation?ref=v9.16.0"
+
+  nrn             = var.nrn
+  np_api_key      = var.np_api_key # for the NRN settings patch (np nrn patch)
+  package_slug    = "np-voltmx-foundry-app"
+  package_version = "X.Y.Z" # the same release, without the v
+
+  # Yours, created from this repository's templates at the same release:
+  service_spec_name                = "Volt MX Foundry app" # the scope type developers pick
+  service_spec_description         = "Publishes a Volt MX Foundry app to a Foundry environment"
+  service_path                     = "voltmx-foundry-app"
+  repository_scope_template        = "https://raw.githubusercontent.com/nullplatform/scopes-voltmx-foundry-app/refs/tags"
+  repository_scope_template_branch = "vX.Y.Z" # the same release
+  create_scope_configuration       = true
+  create_agent_channel             = false # the channel lives in your bindings layer, below
+}
+
+# ── bindings layer ───────────────────────────────────────────────────
+# voltmx_foundry_app_requirements and voltmx_foundry_app come from the other layers (remote state).
+module "voltmx_foundry_app_channel" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/scope_definition_agent_association?ref=v9.16.0"
+
+  nrn                      = var.nrn
+  tags_selectors           = { cluster = "runtime" } # must match the agent's TAGS
+  scope_specification_id   = local.voltmx_foundry_app.service_specification_id
+  scope_specification_slug = local.voltmx_foundry_app.service_specification_slug
+  service_path             = "voltmx-foundry-app"
+
+  # The channel template, from the same tag
+  repository_notification_channel        = "https://raw.githubusercontent.com/nullplatform/scopes-voltmx-foundry-app/refs/tags"
+  repository_notification_channel_branch = "vX.Y.Z" # the same release
+
+  worker_orchestrator = true
+  package_slug        = local.voltmx_foundry_app.package_slug
+}
+
+# The scope's settings, in a provider of the schema the installation created:
+# the Foundry environment, its access and the technical user (every key, and the
+# shape of auth, is in voltmx-foundry-app/specs/scope-configuration.json.tpl).
+resource "nullplatform_provider_config" "voltmx_foundry_app_configuration" {
+  nrn  = var.nrn
+  type = local.voltmx_foundry_app.scope_configuration_specification_slug
+  attributes = jsonencode({
+    environment_name   = "dev"
+    auth               = { account_id = "123456789" } # Volt MX cloud; on-premises: { identity_url, console_url }
+    credentials_secret = "voltmx/my-namespace/foundry" # under the requirements module's secrets_prefix
+    assets             = { bucket = aws_s3_bucket.assets_mobile.bucket }
+  })
+}
+
+# One aws-iam-configuration per NRN and dimensions: add the entry to the list
+# your IAM provider already has.
+#   { selector = "voltmx-foundry-app", arn = local.voltmx_foundry_app_requirements.permissions_role_arn }
+```
+
+The scope assumes the role it finds under selector `voltmx-foundry-app` in the IAM provider closest to its NRN. To upgrade, move the release in every layer: `ref` of the requirements module, `package_version` and `repository_scope_template_branch` of the installation and `repository_notification_channel_branch` of the channel. See tofu-modules' [`scope_package_installation`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/scope_package_installation) for its inputs and outputs.
+
+Prerequisites: an agent whose `TAGS` match the channel's `tags_selectors`, with `np-voltmx-foundry-app` in its `worker_orchestrated_packages` and `public.ecr.aws/nullplatform/*` in `worker.allowedRegistries`.
+
+Every release publishes the new revision from this repository ([`voltmx-foundry-app/publish`](./voltmx-foundry-app/publish), a stack on tofu-modules' `scope_package_publish`, applied by the `publish-package` job of the release workflow).
 
 ## Run locally as a package
 
@@ -152,7 +243,7 @@ it: the release publishes the image and registers the artifact.
 | shellcheck | PR | every bash script |
 | trivy | PR | IaC misconfiguration and image scan, to the Security tab |
 | beta | PR (opened, push, reopened) | publish-test-image-oci: pushes `beta/<image>:test-<branch>-<short sha>` and registers it as a nullplatform artifact |
-| release | push to `main` | release-please → build and push `vX.Y.Z` and `latest` to ECR Public → nullplatform artifact → GitHub release |
+| release | push to `main` | release-please → build and push `vX.Y.Z` and `latest` to ECR Public → nullplatform artifact → the package revision (`voltmx-foundry-app/publish`) → GitHub release |
 | auto-merge-release | after release | merges the release PR |
 | dependabot | daily / weekly | base image and shared workflow bumps |
 
@@ -175,4 +266,4 @@ After adding the **Public ECR** service to the application, set in this reposito
 | `AWS_ROLE_ARN_ECR_PUSH` | secret | the publisher role ARN the Public ECR service returns |
 | `NP_ARTIFACT_NRN` | variable | the NRN of the organization that owns the artifacts |
 
-`ARTIFACT_NP_API_KEY` comes from the organization. The release checks all three before building and fails with a clear error if one is missing. Beta images assume the role in the organization secret `AWS_BETA_ROLE_ARN` (no role is written in the workflow) and push to the image's `beta/` repository in ECR Public, which the dispatcher creates together with the production one.
+`ARTIFACT_NP_API_KEY` comes from the organization, as do `PACKAGE_STATE_AWS_ACCOUNT_ID`, `PACKAGE_TFSTATE_BUCKET` and `PACKAGE_TFSTATE_REGION`, where the publish stack keeps its state (the state role is `github-actions-<repository>-package-state` in that account, by convention). The release checks all three before building and fails with a clear error if one is missing. Beta images assume the role in the organization secret `AWS_BETA_ROLE_ARN` (no role is written in the workflow) and push to the image's `beta/` repository in ECR Public, which the dispatcher creates together with the production one.
