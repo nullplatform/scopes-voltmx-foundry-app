@@ -1,0 +1,3 @@
+# voltmx-foundry-app publish
+
+OpenTofu stack that publishes this scope as the package `np-voltmx-foundry-app`, visible to every organization. Only the release workflow runs it, through the shared [`publish-package`](https://github.com/nullplatform/actions-nullplatform#publish-package) workflow that [`release.yml`](../../.github/workflows/release.yml) enables with `package_stack_dir`. What a release publishes, how it is versioned and which secrets the workflow needs are documented in tofu-modules' [`scope_package_publish`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/scope_package_publish), which this stack calls with the values that name the scope.
