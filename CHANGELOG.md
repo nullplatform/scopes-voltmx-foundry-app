@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.5...v0.2.0) (2026-11-23)
+
+
+### Features
+
+* **package:** publish the scope as a global package ([122fdf8](https://github.com/nullplatform/scopes-voltmx-foundry-app/commit/122fdf82224d616dbbeb64af68b46fca90c2094a))
+* **package:** publish the scope as a global package ([088895a](https://github.com/nullplatform/scopes-voltmx-foundry-app/commit/088895ad7ac81420150d517da5c1f914837cabb0))
+
 ## [0.1.5](https://github.com/nullplatform/scopes-voltmx-foundry-app/compare/v0.1.4...v0.1.5) (2026-11-02)
 
 
