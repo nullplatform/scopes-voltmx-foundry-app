@@ -73,6 +73,10 @@ jobs:
       # Publishes the scope as a global package from this release's specs and
       # image (voltmx-foundry-app/publish).
       package_stack_dir: voltmx-foundry-app/publish
+      # The stack renders the spec and action templates with gomplate
+      # (tofu-modules' scope_definition); publish-package installs only the
+      # tools named here.
+      package_tools: gomplate
     secrets:
       aws_role_arn: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
       artifact_np_api_key: ${{ secrets.ARTIFACT_NP_API_KEY }}
